@@ -6,13 +6,21 @@ import torch, pdb, os,parselmouth
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import numpy as np
 import soundfile as sf
-# from models import SynthesizerTrn256#hifigan_nonsf
-# from infer_pack.models import SynthesizerTrn256NSF as SynthesizerTrn256#hifigan_nsf
-from infer_pack.models import SynthesizerTrnMs256NSFsid as SynthesizerTrn256#hifigan_nsf
-# from infer_pack.models import SynthesizerTrnMs256NSFsid_sim as SynthesizerTrn256#hifigan_nsf
-# from models import SynthesizerTrn256NSFsim as SynthesizerTrn256#hifigan_nsf
-# from models import SynthesizerTrn256NSFsimFlow as SynthesizerTrn256#hifigan_nsf
-
+# from models import SynthesizerTrn256                                             # hifigan_nonsf
+# from infer_pack.models import SynthesizerTrn256NSF          as SynthesizerTrn256 # hifigan_nsf
+from infer_pack.models import SynthesizerTrnMs256NSFsid     as SynthesizerTrn256 # hifigan_nsf
+# from infer_pack.models import SynthesizerTrnMs256NSFsid_sim as SynthesizerTrn256 # hifigan_nsf
+# from models import SynthesizerTrn256NSFsim                  as SynthesizerTrn256 # hifigan_nsf
+# from models import SynthesizerTrn256NSFsimFlow              as SynthesizerTrn256 # hifigan_nsf
+"""
+'Ms' 'NSF' 'sid' 'sim' 'Flow'
+SynthesizerTrn__256__________
+SynthesizerTrn__256NSF_______
+SynthesizerTrnMs256NSFsid____
+SynthesizerTrnMs256NSFsid_sim
+SynthesizerTrn__256NSFsim____
+SynthesizerTrn__256NSFsimFlow
+"""
 
 from scipy.io import wavfile
 from fairseq import checkpoint_utils
