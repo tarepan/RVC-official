@@ -50,7 +50,7 @@ def load_checkpoint_d(checkpoint_path, combd,sbd, optimizer=None,load_opt=1):
       optimizer.load_state_dict(checkpoint_dict['optimizer'])
   #   except:
   #     traceback.print_exc()
-  logger.info("Loaded checkpoint '{}' (iteration {})" .format(checkpoint_path, iteration))
+  logger.info("Loaded checkpoint '{}' (epoch {})" .format(checkpoint_path, iteration))
   return model, optimizer, learning_rate, iteration
 
 
@@ -80,7 +80,7 @@ def load_checkpoint_d(checkpoint_path, combd,sbd, optimizer=None,load_opt=1):
 #     model.module.load_state_dict(new_state_dict)
 #   else:
 #     model.load_state_dict(new_state_dict)
-#   logger.info("Loaded checkpoint '{}' (iteration {})" .format(
+#   logger.info("Loaded checkpoint '{}' (epoch {})" .format(
 #     checkpoint_path, iteration))
 #   return model, optimizer, learning_rate, iteration
 def load_checkpoint(checkpoint_path, model, optimizer=None,load_opt=1):
@@ -116,12 +116,12 @@ def load_checkpoint(checkpoint_path, model, optimizer=None,load_opt=1):
       optimizer.load_state_dict(checkpoint_dict['optimizer'])
   #   except:
   #     traceback.print_exc()
-  logger.info("Loaded checkpoint '{}' (iteration {})" .format(checkpoint_path, iteration))
+  logger.info("Loaded checkpoint '{}' (epoch {})" .format(checkpoint_path, iteration))
   return model, optimizer, learning_rate, iteration
 
 
 def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path):
-  logger.info("Saving model and optimizer state at iteration {} to {}".format(
+  logger.info("Saving model and optimizer state at epoch {} to {}".format(
     iteration, checkpoint_path))
   if hasattr(model, 'module'):
     state_dict = model.module.state_dict()
@@ -132,7 +132,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
               'optimizer': optimizer.state_dict(),
               'learning_rate': learning_rate}, checkpoint_path)
 def save_checkpoint_d(combd, sbd, optimizer, learning_rate, iteration, checkpoint_path):
-  logger.info("Saving model and optimizer state at iteration {} to {}".format(
+  logger.info("Saving model and optimizer state at epoch {} to {}".format(
     iteration, checkpoint_path))
   if hasattr(combd, 'module'): state_dict_combd = combd.module.state_dict()
   else:state_dict_combd = combd.state_dict()

@@ -1,13 +1,12 @@
 import os,sys,traceback
-if len(sys.argv) == 4:
-    n_part=int(sys.argv[1])
-    i_part=int(sys.argv[2])
-    exp_dir=sys.argv[3]
-else:
-    n_part=int(sys.argv[1])
-    i_part=int(sys.argv[2])
-    i_gpu=sys.argv[3]
+# device=sys.argv[1]
+n_part=int(sys.argv[2])
+i_part=int(sys.argv[3])
+if len(sys.argv) == 5:
     exp_dir=sys.argv[4]
+else:
+    i_gpu=sys.argv[4]
+    exp_dir=sys.argv[5]
     os.environ["CUDA_VISIBLE_DEVICES"]=str(i_gpu)
 
 import torch
@@ -23,7 +22,6 @@ def printt(strr):
     f.write("%s\n" % strr)
     f.flush()
 printt(sys.argv)
-# model_path = "/bili-coeus/jupyter/jupyterhub-liujing04/speech/pretrain/ContentVec_legacy500.pt"
 model_path = "hubert_base.pt"
 
 printt(exp_dir)
@@ -51,8 +49,8 @@ models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
 )
 model = models[0]
 model = model.to(device)
-if torch.cuda.is_available():
-    model = model.half()
+printt("move model to %s"%device)
+if device != "cpu": model = model.half()
 model.eval()
 
 todo=sorted(list(os.listdir(wavPath)))[i_part::n_part]
@@ -71,7 +69,7 @@ else:
                 feats = readwave(wav_path, normalize=saved_cfg.task.normalize)
                 padding_mask = torch.BoolTensor(feats.shape).fill_(False)
                 inputs = {
-                    "source": feats.half().to(device) if torch.cuda.is_available() else feats.to(device),
+                    "source": feats.half().to(device) if device != "cpu" else feats.to(device),
                     "padding_mask": padding_mask.to(device),
                     "output_layer": 9,  # layer 9
                 }
@@ -80,8 +78,10 @@ else:
                     feats = model.final_proj(logits[0])
 
                 feats = feats.squeeze(0).float().cpu().numpy()
-                # feats = np.repeat(feats, 2,0) # 20ms -> 10ms
-                np.save(out_path, feats, allow_pickle=False)
+                if(np.isnan(feats).sum()==0):
+                    np.save(out_path, feats, allow_pickle=False)
+                else:
+                    printt("%s-contains nan"%file)
                 if (idx % n == 0):printt("now-%s,all-%s,%s,%s"%(len(todo),idx,file,feats.shape))
         except:
             printt(traceback.format_exc())

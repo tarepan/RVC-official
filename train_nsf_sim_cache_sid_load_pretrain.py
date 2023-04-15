@@ -10,7 +10,7 @@ n_gpus=len(hps.gpus.split("-"))
 
 from random import shuffle
 import traceback,json,argparse,itertools,math,torch,pdb
-torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 from torch import nn, optim
 from torch.nn import functional as F
@@ -59,7 +59,7 @@ def run(rank, n_gpus, hps):
     else:train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
     train_sampler = DistributedBucketSampler(
         train_dataset,
-        hps.train.batch_size,
+        hps.train.batch_size*n_gpus,
         # [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200,1400],  # 16s
         [100, 200, 300, 400, 500, 600, 700, 800, 900],  # 16s
         num_replicas=n_gpus,
@@ -240,9 +240,8 @@ def train_and_evaluate(
                     }
                     utils.summarize(writer=writer, global_step=global_step, images=image_dict, scalars=scalar_dict)
             global_step += 1
-
         # Checkpointing
-        if epoch % hps.save_every_epoch == 0:
+        if epoch % hps.save_every_epoch == 0 and rank == 0:
             if(hps.if_latest==0):
                 utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
                 utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
@@ -373,7 +372,7 @@ def train_and_evaluate(
                     )
             global_step += 1
         # if global_step % hps.train.eval_interval == 0:
-        if epoch % hps.save_every_epoch == 0:
+        if epoch % hps.save_every_epoch == 0 and rank == 0:
             if(hps.if_latest==0):
                 utils.save_checkpoint(
                     net_g,
@@ -408,13 +407,12 @@ def train_and_evaluate(
 
     if rank == 0:
         logger.info("====> Epoch: {}".format(epoch))
-    if(epoch>=hps.total_epoch):
-        if rank == 0:
-            logger.info("Training is done. The program is closed.")
-            from process_ckpt import savee#def savee(ckpt,sr,if_f0,name,epoch):
-            if hasattr(net_g, 'module'):ckpt = net_g.module.state_dict()
-            else:ckpt = net_g.state_dict()
-            print("saving final ckpt:",savee(ckpt,hps.sample_rate,hps.if_f0,hps.name,epoch))
+    if(epoch>=hps.total_epoch and rank == 0):
+        logger.info("Training is done. The program is closed.")
+        from process_ckpt import savee#def savee(ckpt,sr,if_f0,name,epoch):
+        if hasattr(net_g, 'module'):ckpt = net_g.module.state_dict()
+        else:ckpt = net_g.state_dict()
+        logger.info("saving final ckpt:%s"%(savee(ckpt,hps.sample_rate,hps.if_f0,hps.name,epoch)))
         os._exit(2333333)
 
 
