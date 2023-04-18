@@ -1,15 +1,15 @@
-"""Finetuning script"""
+import sys, os
 
-import sys,os
-now_dir=os.getcwd()
-sys.path.append(os.path.join(now_dir,"train"))
+now_dir = os.getcwd()
+sys.path.append(os.path.join(now_dir, "train"))
 import utils
-hps = utils.get_hparams()
-os.environ["CUDA_VISIBLE_DEVICES"]=hps.gpus.replace("-",",")
-n_gpus=len(hps.gpus.split("-"))
 
+hps = utils.get_hparams()
+os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
+n_gpus = len(hps.gpus.split("-"))
 from random import shuffle
-import traceback,json,argparse,itertools,math,torch,pdb
+import traceback, json, argparse, itertools, math, torch, pdb
+
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 from torch import nn, optim
@@ -21,11 +21,18 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
 from infer_pack import commons
-
+from time import sleep
 from time import time as ttime
-from data_utils import TextAudioLoaderMultiNSFsid,TextAudioLoader, TextAudioCollateMultiNSFsid,TextAudioCollate, DistributedBucketSampler
+from data_utils import (
+    TextAudioLoaderMultiNSFsid,
+    TextAudioLoader,
+    TextAudioCollateMultiNSFsid,
+    TextAudioCollate,
+    DistributedBucketSampler,
+)
 from infer_pack.models import (
-    SynthesizerTrnMs256NSFsid,SynthesizerTrnMs256NSFsid_nono,
+    SynthesizerTrnMs256NSFsid,
+    SynthesizerTrnMs256NSFsid_nono,
     MultiPeriodDiscriminator,
 )
 from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
@@ -35,10 +42,9 @@ from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 global_step = 0
 
 
-
 def main():
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "5555"
+    os.environ["MASTER_PORT"] = "51515"
     mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps))
 
 
@@ -53,13 +59,16 @@ def run(rank, n_gpus, hps):
 
     dist.init_process_group(backend="gloo", init_method="env://", world_size=n_gpus, rank=rank)
     torch.manual_seed(hps.train.seed)
-    if torch.cuda.is_available(): torch.cuda.set_device(rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(rank)
 
-    if (hps.if_f0 == 1):train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
-    else:train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
+    if hps.if_f0 == 1:
+        train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
+    else:
+        train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
     train_sampler = DistributedBucketSampler(
         train_dataset,
-        hps.train.batch_size*n_gpus,
+        hps.train.batch_size * n_gpus,
         # [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200,1400],  # 16s
         [100, 200, 300, 400, 500, 600, 700, 800, 900],  # 16s
         num_replicas=n_gpus,
@@ -68,18 +77,30 @@ def run(rank, n_gpus, hps):
     )
     # It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
     # num_workers=8 -> num_workers=4
-    if (hps.if_f0 == 1):collate_fn = TextAudioCollateMultiNSFsid()
-    else:collate_fn = TextAudioCollate()
-    train_loader = DataLoader(train_dataset, num_workers=4, shuffle=False, pin_memory=True, collate_fn=collate_fn, batch_sampler=train_sampler, persistent_workers=True, prefetch_factor=8)
+    if hps.if_f0 == 1:
+        collate_fn = TextAudioCollateMultiNSFsid()
+    else:
+        collate_fn = TextAudioCollate()
+    train_loader = DataLoader(
+        train_dataset,
+        num_workers=4,
+        shuffle=False,
+        pin_memory=True,
+        collate_fn=collate_fn,
+        batch_sampler=train_sampler,
+        persistent_workers=True,
+        prefetch_factor=8,
+    )
 
     # Models: & MPD
-    if(hps.if_f0==1):
+    if hps.if_f0 == 1:
         net_g = SynthesizerTrnMs256NSFsid(     hps.data.filter_length // 2 + 1, hps.train.segment_size // hps.data.hop_length, **hps.model, is_half=hps.train.fp16_run, sr=hps.sample_rate)
     else:
         net_g = SynthesizerTrnMs256NSFsid_nono(hps.data.filter_length // 2 + 1, hps.train.segment_size // hps.data.hop_length, **hps.model, is_half=hps.train.fp16_run)
-    net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm)
     if torch.cuda.is_available():
         net_g = net_g.cuda(rank)
+    net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm)
+    if torch.cuda.is_available():
         net_d = net_d.cuda(rank)
 
     # Optims
@@ -91,20 +112,22 @@ def run(rank, n_gpus, hps):
     net_d = DDP(net_d, device_ids=[rank]) if torch.cuda.is_available() else DDP(net_d)
 
     # States
-    try:
+    try:  # 如果能加载自动resume
         _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d)
         if rank == 0:
             logger.info("loaded D")
         _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g)
         global_step = (epoch_str - 1) * len(train_loader)
-    except:#初回読み込みに失敗した場合は、pretrainを読み込みます。
+        # epoch_str = 1
+        # global_step = 0
+    except:  # 如果首次不能加载，加载pretrain
         traceback.print_exc()
         epoch_str = 1
         global_step = 0
         if rank == 0:
             logger.info("loaded pretrained %s %s"%(hps.pretrainG,hps.pretrainD))
-        print(net_g.module.load_state_dict(torch.load(hps.pretrainG,map_location="cpu")["model"]))
-        print(net_d.module.load_state_dict(torch.load(hps.pretrainD,map_location="cpu")["model"]))
+        print(net_g.module.load_state_dict(torch.load(hps.pretrainG, map_location="cpu")["model"]))
+        print(net_d.module.load_state_dict(torch.load(hps.pretrainD, map_location="cpu")["model"]))
 
     # Sched
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str - 2)
@@ -113,7 +136,7 @@ def run(rank, n_gpus, hps):
     # fp16
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
-    cache=[]
+    cache = []
     for epoch in range(epoch_str, hps.train.epochs + 1):
         if rank == 0:
             train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, None], logger, [writer, writer_eval], cache)
@@ -124,7 +147,7 @@ def run(rank, n_gpus, hps):
 
 
 def train_and_evaluate(
-    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers,cache
+    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache
 ):
     net_g, net_d = nets
     optim_g, optim_d = optims
@@ -137,33 +160,33 @@ def train_and_evaluate(
 
     net_g.train()
     net_d.train()
-    if(cache==[]or hps.if_cache_data_in_gpu==False):#第一个epoch把cache全部填满训练集
+    if cache == [] or hps.if_cache_data_in_gpu == False:  # 第一个epoch把cache全部填满训练集
         # print("caching")
         for batch_idx, info in enumerate(train_loader):
             # Data
-            if (hps.if_f0 == 1):
+            if hps.if_f0 == 1:
                 phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid = info
             else:
                 phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid = info
             if torch.cuda.is_available():
-                phone, phone_lengths = phone.cuda(rank, non_blocking=True), phone_lengths.cuda(rank, non_blocking=True )
-                if (hps.if_f0 == 1):
+                phone, phone_lengths = phone.cuda(rank, non_blocking=True), phone_lengths.cuda(rank, non_blocking=True)
+                if hps.if_f0 == 1:
                     pitch, pitchf = pitch.cuda(rank, non_blocking=True), pitchf.cuda(rank, non_blocking=True)
                 sid = sid.cuda(rank, non_blocking=True)
                 spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
                 wave, wave_lengths = wave.cuda(rank, non_blocking=True), wave_lengths.cuda(rank, non_blocking=True)
-            if(hps.if_cache_data_in_gpu==True):
-                if (hps.if_f0 == 1):
-                    cache.append((batch_idx, (phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths ,sid)))
+            if hps.if_cache_data_in_gpu == True:
+                if hps.if_f0 == 1:
+                    cache.append((batch_idx, (phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid)))
                 else:
-                    cache.append((batch_idx, (phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths ,sid)))
+                    cache.append((batch_idx, (phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid)))
             # Run
             with autocast(enabled=hps.train.fp16_run):
-                if (hps.if_f0 == 1):
-                    y_hat,ids_slice,x_mask,z_mask,(z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, pitch,pitchf, spec, spec_lengths,sid)
+                if hps.if_f0 == 1:
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
                 else:
-                    y_hat,ids_slice,x_mask,z_mask,(z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, spec, spec_lengths,sid)
-                mel = spec_to_mel_torch(spec,hps.data.filter_length,hps.data.n_mel_channels,hps.data.sampling_rate,hps.data.mel_fmin,hps.data.mel_fmax,)
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
+                mel = spec_to_mel_torch(spec, hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate, hps.data.mel_fmin, hps.data.mel_fmax)
                 y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
                 with autocast(enabled=False):
                     y_hat_mel = mel_spectrogram_torch(
@@ -176,8 +199,8 @@ def train_and_evaluate(
                         hps.data.mel_fmin,
                         hps.data.mel_fmax,
                     )
-                if(hps.train.fp16_run==True):
-                    y_hat_mel=y_hat_mel.half()
+                if hps.train.fp16_run == True:
+                    y_hat_mel = y_hat_mel.half()
                 wave = commons.slice_segments(wave, ids_slice * hps.data.hop_length, hps.train.segment_size)
 
                 # Discriminator
@@ -242,22 +265,49 @@ def train_and_evaluate(
             global_step += 1
         # Checkpointing
         if epoch % hps.save_every_epoch == 0 and rank == 0:
-            if(hps.if_latest==0):
+            if hps.if_latest == 0:
                 utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
                 utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
             else:
                 utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(2333333)))
                 utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(2333333)))
 
-    else:#后续的epoch直接使用打乱的cache
+    else:  # 后续的epoch直接使用打乱的cache
         shuffle(cache)
-        # print("using cache")
         for batch_idx, info in cache:
-            if (hps.if_f0 == 1):phone,phone_lengths,pitch,pitchf,spec,spec_lengths,wave,wave_lengths,sid=info
-            else:phone,phone_lengths,spec,spec_lengths,wave,wave_lengths,sid=info
+            if hps.if_f0 == 1:
+                (
+                    phone,
+                    phone_lengths,
+                    pitch,
+                    pitchf,
+                    spec,
+                    spec_lengths,
+                    wave,
+                    wave_lengths,
+                    sid,
+                ) = info
+            else:
+                phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
             with autocast(enabled=hps.train.fp16_run):
-                if (hps.if_f0 == 1):y_hat,ids_slice,x_mask,z_mask,(z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, pitch,pitchf, spec, spec_lengths,sid)
-                else:y_hat,ids_slice,x_mask,z_mask,(z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, spec, spec_lengths,sid)
+                if hps.if_f0 == 1:
+                    (
+                        y_hat,
+                        ids_slice,
+                        x_mask,
+                        z_mask,
+                        (z, z_p, m_p, logs_p, m_q, logs_q),
+                    ) = net_g(
+                        phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid
+                    )
+                else:
+                    (
+                        y_hat,
+                        ids_slice,
+                        x_mask,
+                        z_mask,
+                        (z, z_p, m_p, logs_p, m_q, logs_q),
+                    ) = net_g(phone, phone_lengths, spec, spec_lengths, sid)
                 mel = spec_to_mel_torch(
                     spec,
                     hps.data.filter_length,
@@ -280,8 +330,8 @@ def train_and_evaluate(
                         hps.data.mel_fmin,
                         hps.data.mel_fmax,
                     )
-                if(hps.train.fp16_run==True):
-                    y_hat_mel=y_hat_mel.half()
+                if hps.train.fp16_run == True:
+                    y_hat_mel = y_hat_mel.half()
                 wave = commons.slice_segments(
                     wave, ids_slice * hps.data.hop_length, hps.train.segment_size
                 )  # slice
@@ -341,17 +391,27 @@ def train_and_evaluate(
                         "grad_norm_g": grad_norm_g,
                     }
                     scalar_dict.update(
-                        {"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/kl": loss_kl}
+                        {
+                            "loss/g/fm": loss_fm,
+                            "loss/g/mel": loss_mel,
+                            "loss/g/kl": loss_kl,
+                        }
                     )
 
                     scalar_dict.update(
                         {"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)}
                     )
                     scalar_dict.update(
-                        {"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)}
+                        {
+                            "loss/d_r/{}".format(i): v
+                            for i, v in enumerate(losses_disc_r)
+                        }
                     )
                     scalar_dict.update(
-                        {"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)}
+                        {
+                            "loss/d_g/{}".format(i): v
+                            for i, v in enumerate(losses_disc_g)
+                        }
                     )
                     image_dict = {
                         "slice/mel_org": utils.plot_spectrogram_to_numpy(
@@ -373,7 +433,7 @@ def train_and_evaluate(
             global_step += 1
         # if global_step % hps.train.eval_interval == 0:
         if epoch % hps.save_every_epoch == 0 and rank == 0:
-            if(hps.if_latest==0):
+            if hps.if_latest == 0:
                 utils.save_checkpoint(
                     net_g,
                     optim_g,
@@ -404,15 +464,21 @@ def train_and_evaluate(
                     os.path.join(hps.model_dir, "D_{}.pth".format(2333333)),
                 )
 
-
     if rank == 0:
         logger.info("====> Epoch: {}".format(epoch))
-    if(epoch>=hps.total_epoch and rank == 0):
+    if epoch >= hps.total_epoch and rank == 0:
         logger.info("Training is done. The program is closed.")
-        from process_ckpt import savee#def savee(ckpt,sr,if_f0,name,epoch):
-        if hasattr(net_g, 'module'):ckpt = net_g.module.state_dict()
-        else:ckpt = net_g.state_dict()
-        logger.info("saving final ckpt:%s"%(savee(ckpt,hps.sample_rate,hps.if_f0,hps.name,epoch)))
+        from process_ckpt import savee  # def savee(ckpt,sr,if_f0,name,epoch):
+
+        if hasattr(net_g, "module"):
+            ckpt = net_g.module.state_dict()
+        else:
+            ckpt = net_g.state_dict()
+        logger.info(
+            "saving final ckpt:%s"
+            % (savee(ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch))
+        )
+        sleep(1)
         os._exit(2333333)
 
 
