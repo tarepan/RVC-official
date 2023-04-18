@@ -59,7 +59,6 @@ from config import is_half,device,python_cmd,listen_port,iscolab,noparallel,noau
 from infer_uvr5 import _audio_pre_
 from my_utils import load_audio
 from train.process_ckpt import show_info,change_info,merge,extract_small_model
-# from trainset_preprocess_pipeline import PreProcess
 logging.getLogger('numba').setLevel(logging.WARNING)
 
 class ToolButton(gr.Button, gr.components.FormComponent):
