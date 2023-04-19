@@ -30,11 +30,7 @@ from data_utils import (
     TextAudioCollate,
     DistributedBucketSampler,
 )
-from infer_pack.models import (
-    SynthesizerTrnMs256NSFsid,
-    SynthesizerTrnMs256NSFsid_nono,
-    MultiPeriodDiscriminator,
-)
+from infer_pack.models import SynthesizerTrnMs256NSFsid, SynthesizerTrnMs256NSFsid_nono, MultiPeriodDiscriminator
 from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 
@@ -65,7 +61,7 @@ def run(rank, n_gpus, hps):
     if hps.if_f0 == 1:
         train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
     else:
-        train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
+        train_dataset =            TextAudioLoader(hps.data.training_files, hps.data)
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size * n_gpus,
@@ -146,9 +142,8 @@ def run(rank, n_gpus, hps):
         scheduler_d.step()
 
 
-def train_and_evaluate(
-    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache
-):
+def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache):
+    """Run a epoch"""
     net_g, net_d = nets
     optim_g, optim_d = optims
     train_loader, eval_loader = loaders
@@ -163,11 +158,15 @@ def train_and_evaluate(
     if cache == [] or hps.if_cache_data_in_gpu == False:  # 第一个epoch把cache全部填满训练集
         # print("caching")
         for batch_idx, info in enumerate(train_loader):
+            # Step
+
             # Data
+            ## Unpack
             if hps.if_f0 == 1:
                 phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid = info
             else:
                 phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid = info
+            ## Load
             if torch.cuda.is_available():
                 phone, phone_lengths = phone.cuda(rank, non_blocking=True), phone_lengths.cuda(rank, non_blocking=True)
                 if hps.if_f0 == 1:
@@ -175,17 +174,19 @@ def train_and_evaluate(
                 sid = sid.cuda(rank, non_blocking=True)
                 spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
                 wave, wave_lengths = wave.cuda(rank, non_blocking=True), wave_lengths.cuda(rank, non_blocking=True)
+            ## Cache
             if hps.if_cache_data_in_gpu == True:
                 if hps.if_f0 == 1:
                     cache.append((batch_idx, (phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid)))
                 else:
                     cache.append((batch_idx, (phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid)))
+
             # Run
             with autocast(enabled=hps.train.fp16_run):
                 if hps.if_f0 == 1:
-                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
                 else:
-                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
                 mel = spec_to_mel_torch(spec, hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate, hps.data.mel_fmin, hps.data.mel_fmax)
                 y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
                 with autocast(enabled=False):
@@ -219,10 +220,10 @@ def train_and_evaluate(
             scaler.step(optim_d)
 
             with autocast(enabled=hps.train.fp16_run):
-                # Generator
+                # D
                 y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
                 with autocast(enabled=False):
-                    loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
+                    loss_mel = F.l1_loss(y_mel, y_hat_mel)              * hps.train.c_mel
                     loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
                     loss_fm = feature_loss(fmap_r, fmap_g)
                     loss_gen, losses_gen = generator_loss(y_d_hat_g)
@@ -245,7 +246,6 @@ def train_and_evaluate(
                         loss_mel = 50
                     if loss_kl > 5:
                         loss_kl = 5
-
                     logger.info([global_step, lr])
                     logger.info(f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}")
                     scalar_dict = {
@@ -253,61 +253,40 @@ def train_and_evaluate(
                         "learning_rate": lr, "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g,
                     }
                     scalar_dict.update({"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/kl": loss_kl})
-                    scalar_dict.update({"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)})
+                    scalar_dict.update({"loss/g/{}".format(i):   v for i, v in enumerate(losses_gen)})
                     scalar_dict.update({"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)})
                     scalar_dict.update({"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)})
                     image_dict = {
-                        "slice/mel_org": utils.plot_spectrogram_to_numpy(y_mel[0].data.cpu().numpy()),
+                        "slice/mel_org": utils.plot_spectrogram_to_numpy(    y_mel[0].data.cpu().numpy()),
                         "slice/mel_gen": utils.plot_spectrogram_to_numpy(y_hat_mel[0].data.cpu().numpy()),
-                        "all/mel": utils.plot_spectrogram_to_numpy(mel[0].data.cpu().numpy()),
+                        "all/mel":       utils.plot_spectrogram_to_numpy(      mel[0].data.cpu().numpy()),
                     }
                     utils.summarize(writer=writer, global_step=global_step, images=image_dict, scalars=scalar_dict)
             global_step += 1
-        # Checkpointing
-        if epoch % hps.save_every_epoch == 0 and rank == 0:
-            if hps.if_latest == 0:
-                utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
-                utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
-            else:
-                utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(2333333)))
-                utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(2333333)))
 
-    else:  # 后续的epoch直接使用打乱的cache
+        # Checkpointing at epoch end
+        if epoch % hps.save_every_epoch == 0 and rank == 0:
+            num = global_step if hps.if_latest == 0 else 2333333
+            utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(num)))
+            utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(num)))
+
+    else:
+        # use cache
         shuffle(cache)
         for batch_idx, info in cache:
+            # Data
+            ## Unpack
             if hps.if_f0 == 1:
-                (
-                    phone,
-                    phone_lengths,
-                    pitch,
-                    pitchf,
-                    spec,
-                    spec_lengths,
-                    wave,
-                    wave_lengths,
-                    sid,
-                ) = info
+                phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid = info
             else:
-                phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid = info
+                phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid = info
+
+            # Run
             with autocast(enabled=hps.train.fp16_run):
                 if hps.if_f0 == 1:
-                    (
-                        y_hat,
-                        ids_slice,
-                        x_mask,
-                        z_mask,
-                        (z, z_p, m_p, logs_p, m_q, logs_q),
-                    ) = net_g(
-                        phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid
-                    )
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
                 else:
-                    (
-                        y_hat,
-                        ids_slice,
-                        x_mask,
-                        z_mask,
-                        (z, z_p, m_p, logs_p, m_q, logs_q),
-                    ) = net_g(phone, phone_lengths, spec, spec_lengths, sid)
+                    y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
                 mel = spec_to_mel_torch(
                     spec,
                     hps.data.filter_length,
@@ -332,9 +311,7 @@ def train_and_evaluate(
                     )
                 if hps.train.fp16_run == True:
                     y_hat_mel = y_hat_mel.half()
-                wave = commons.slice_segments(
-                    wave, ids_slice * hps.data.hop_length, hps.train.segment_size
-                )  # slice
+                wave = commons.slice_segments(wave, ids_slice * hps.data.hop_length, hps.train.segment_size)
 
                 # Discriminator
                 y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())

@@ -47,6 +47,12 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         return sid
 
     def get_audio_text_pair(self, audiopath_and_text):
+        """Yield datum.
+        
+        Returns:
+            spec, wav, phone, pitch, pitchf, dv
+        """
+
         # separate filename and text
         file = audiopath_and_text[0]
         phone = audiopath_and_text[1]
@@ -137,7 +143,7 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
 
 
 class TextAudioCollateMultiNSFsid:
-    """Zero-pads model inputs and targets"""
+    """Collate function, Zero-pads model inputs and targets"""
 
     def __init__(self, return_ids=False):
         self.return_ids = return_ids
@@ -147,11 +153,19 @@ class TextAudioCollateMultiNSFsid:
         PARAMS
         ------
         batch: [text_normalized, spec_normalized, wav_normalized]
+        Returns:
+            phone_padded,
+            phone_lengths,
+            pitch_padded,
+            pitchf_padded,
+            spec_padded,
+            spec_lengths,
+            wave_padded,
+            wave_lengths,
+            sid,
         """
         # Right zero-pad all one-hot text sequences to max input length
-        _, ids_sorted_decreasing = torch.sort(
-            torch.LongTensor([x[0].size(1) for x in batch]), dim=0, descending=True
-        )
+        _, ids_sorted_decreasing = torch.sort(torch.LongTensor([x[0].size(1) for x in batch]), dim=0, descending=True)
 
         max_spec_len = max([x[0].size(1) for x in batch])
         max_wave_len = max([x[1].size(1) for x in batch])
@@ -164,50 +178,40 @@ class TextAudioCollateMultiNSFsid:
 
         max_phone_len = max([x[2].size(0) for x in batch])
         phone_lengths = torch.LongTensor(len(batch))
-        phone_padded = torch.FloatTensor(
-            len(batch), max_phone_len, batch[0][2].shape[1]
-        )  # (spec, wav, phone, pitch)
+        phone_padded = torch.FloatTensor(len(batch), max_phone_len, batch[0][2].shape[1])  # (spec, wav, phone, pitch)
         pitch_padded = torch.LongTensor(len(batch), max_phone_len)
         pitchf_padded = torch.FloatTensor(len(batch), max_phone_len)
         phone_padded.zero_()
         pitch_padded.zero_()
         pitchf_padded.zero_()
-        # dv = torch.FloatTensor(len(batch), 256)#gin=256
         sid = torch.LongTensor(len(batch))
 
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
-            spec = row[0]
+            spec, wave = row[0], row[1]
             spec_padded[i, :, : spec.size(1)] = spec
-            spec_lengths[i] = spec.size(1)
-
-            wave = row[1]
             wave_padded[i, :, : wave.size(1)] = wave
+            spec_lengths[i] = spec.size(1)
             wave_lengths[i] = wave.size(1)
 
             phone = row[2]
             phone_padded[i, : phone.size(0), :] = phone
             phone_lengths[i] = phone.size(0)
 
-            pitch = row[3]
-            pitch_padded[i, : pitch.size(0)] = pitch
+            pitch  = row[3]
             pitchf = row[4]
+            pitch_padded[ i, : pitch.size(0) ] = pitch
             pitchf_padded[i, : pitchf.size(0)] = pitchf
 
-            # dv[i] = row[5]
             sid[i] = row[5]
 
         return (
-            phone_padded,
-            phone_lengths,
+            phone_padded, phone_lengths,
             pitch_padded,
             pitchf_padded,
-            spec_padded,
-            spec_lengths,
-            wave_padded,
-            wave_lengths,
-            # dv
+            spec_padded,  spec_lengths,
+            wave_padded,  wave_lengths,
             sid,
         )
 

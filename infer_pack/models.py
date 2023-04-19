@@ -15,7 +15,12 @@ from infer_pack import commons
 
 
 class TextEncoder256(nn.Module):
-    def __init__(self, out_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout, f0=True):
+    """Unit encoder, Embedding-TransformerEncoder-SegFC."""
+    def __init__(self, out_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size: int, p_dropout, f0=True):
+        """
+        Args:
+            kernel_size - Conformer FF block's conv kernel size (1 means Transformer, not Conformer)
+        """
         super().__init__()
         # Common params
         self.hidden_channels = hidden_channels
@@ -28,101 +33,110 @@ class TextEncoder256(nn.Module):
         # Main Encoder
         self.filter_channels, self.n_heads, self.n_layers, self.kernel_size, self.p_dropout = filter_channels, n_heads, n_layers, kernel_size, p_dropout
         self.encoder = attentions.Encoder(hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
-        # Output Projection
+        # PostNet - SegFC
         self.out_channels = out_channels
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, phone, pitch, lengths):
+        """
+        Args:
+            phone
+            pitch
+            lengths
+        Returns:
+            mu        :: maybe (B, Feat=o, Frame) - Normal distribution's μ parameter
+            log_sigma :: maybe (B, Feat=o, Frame) - Normal distribution's σ parameter
+            x_mask    ::       (1,      1, Frame) - Mask
+        """
+        # Embedding
         if pitch == None:
             x = self.emb_phone(phone)
         else:
             x = self.emb_phone(phone) + self.emb_pitch(pitch)
-        x = x * math.sqrt(self.hidden_channels)  # [b, t, h]
+        x = x * math.sqrt(self.hidden_channels) # :: (B, Frame, Feat)
         x = self.lrelu(x)
-        x = torch.transpose(x, 1, -1)  # [b, h, t]
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype)
-        x = self.encoder(x * x_mask, x_mask)
-        stats = self.proj(x) * x_mask
 
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        return m, logs, x_mask
+        # Encoder
+        x = torch.transpose(x, 1, -1)  # :: (B, Frame, Feat) -> (B, Feat, Frame)
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype) # :: (1, 1, Frame)
+        x = self.encoder(x * x_mask, x_mask)
+
+        # PostNet :: (B, Feat=h, Frame) -> (B, Feat=2*o, Frame) -> 2x (B, Feat=o, Frame)
+        stats = self.proj(x) * x_mask
+        mu, log_sigma = torch.split(stats, self.out_channels, dim=1)
+
+        return mu, log_sigma, x_mask
 
 
 class TextEncoder256Sim(nn.Module):
-    def __init__(self, out_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout, f0=True):
+    """Embedding-TransformerEncoder-SegFC."""
+    def __init__(self, out_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size: int, p_dropout, f0=True):
+        """
+        Args:
+            kernel_size - Conformer FF block's conv kernel size (1 means Transformer, not Conformer)
+        """
         super().__init__()
         # Common params
         self.hidden_channels = hidden_channels
-        self.filter_channels = filter_channels
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.kernel_size = kernel_size
-        self.p_dropout = p_dropout
-        # Phone Embedding (same as '256')
+        # Phone Embedding
         self.emb_phone = nn.Linear(256, hidden_channels)
         self.lrelu = nn.LeakyReLU(0.1, inplace=True)
-        # fo embedding (same as '256')
+        # fo embedding
         if f0 == True:
             self.emb_pitch = nn.Embedding(256, hidden_channels)
-        # Main Encoder (same as '256')
+        # Main Encoder
+        self.filter_channels, self.n_heads, self.n_layers, self.kernel_size, self.p_dropout = filter_channels, n_heads, n_layers, kernel_size, p_dropout
         self.encoder = attentions.Encoder(hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
-        # Output Projection (`out_channels` is not x2, compared to '256')
+        # Output Projection - SegFC (`out_channels` is not x2, compared to '256')
         self.out_channels = out_channels
         self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
     def forward(self, phone, pitch, lengths):
+        """
+        Args:
+            phone
+            pitch
+            lengths
+        Returns:
+            x         :: maybe (B, Feat=o, Frame) - Encoded series
+            x_mask    ::       (1,      1, Frame) - Mask
+        """
+        # Embedding
         if pitch == None:
             x = self.emb_phone(phone)
         else:
             x = self.emb_phone(phone) + self.emb_pitch(pitch)
         x = x * math.sqrt(self.hidden_channels)  # [b, t, h]
         x = self.lrelu(x)
+
+        # Encoder
         x = torch.transpose(x, 1, -1)  # [b, h, t]
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(
-            x.dtype
-        )
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype)
         x = self.encoder(x * x_mask, x_mask)
+
+        #  PostNet :: (B, Feat=h, Frame) -> (B, Feat=o, Frame)
         x = self.proj(x) * x_mask
         # No split, compared to '256'
+
         return x, x_mask
 
 
 class ResidualCouplingBlock(nn.Module):
-    def __init__(
-        self,
-        channels,
-        hidden_channels,
-        kernel_size,
-        dilation_rate,
-        n_layers,
-        n_flows=4,
-        gin_channels=0,
-    ):
+    def __init__(self, channels, hidden_channels, kernel_size, dilation_rate, n_layers, n_flows=4, gin_channels=0):
         super().__init__()
-        self.channels = channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.dilation_rate = dilation_rate
-        self.n_layers = n_layers
-        self.n_flows = n_flows
-        self.gin_channels = gin_channels
+        self.channels, self.hidden_channels, self.kernel_size, self.dilation_rate, self.n_layers, self.gin_channels = channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels
 
+        self.n_flows = n_flows
         self.flows = nn.ModuleList()
         for i in range(n_flows):
-            self.flows.append(
-                modules.ResidualCouplingLayer(
-                    channels,
-                    hidden_channels,
-                    kernel_size,
-                    dilation_rate,
-                    n_layers,
-                    gin_channels=gin_channels,
-                    mean_only=True,
-                )
-            )
+            self.flows.append(modules.ResidualCouplingLayer(channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels, mean_only=True))
             self.flows.append(modules.Flip())
 
-    def forward(self, x, x_mask, g=None, reverse=False):
+    def forward(self, x, x_mask, g=None, reverse: bool = False):
+        """
+        Args:
+            reverse - Whether calculate f or f^-1
+        """
         if not reverse:
             for flow in self.flows:
                 x, _ = flow(x, x_mask, g=g, reverse=reverse)
@@ -137,45 +151,47 @@ class ResidualCouplingBlock(nn.Module):
 
 
 class PosteriorEncoder(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        hidden_channels,
-        kernel_size,
-        dilation_rate,
-        n_layers,
-        gin_channels=0,
+    """q(z|x), approximate posterior distribution over latent z given observed x, SegFC-WaveNet-SegFC-NormDist."""
+    def __init__(self,
+        in_channels:     int,     # Feature dimension size of observed variable series
+        out_channels:    int,     # Feature dimension size of latent   variable series (== n_z)
+        hidden_channels: int,     # Feature dimension size of hidden layer
+        kernel_size:     int,     # WaveNet kernel size
+        dilation_rate:   int,     # WaveNet dilation factor
+        n_layers:        int,     # WaveNet the number of layers
+        gin_channels:    int = 0, # 
     ):
         super().__init__()
-        self.in_channels = in_channels
         self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.dilation_rate = dilation_rate
-        self.n_layers = n_layers
-        self.gin_channels = gin_channels
-
-        self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
-        self.enc = modules.WN(
-            hidden_channels,
-            kernel_size,
-            dilation_rate,
-            n_layers,
-            gin_channels=gin_channels,
-        )
+        self.in_channels, self.hidden_channels, self.kernel_size, self.dilation_rate, self.n_layers, self.gin_channels = in_channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels
+        self.pre  = nn.Conv1d(in_channels,     hidden_channels,  1)
+        self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, x, x_lengths, g=None):
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(
-            x.dtype
-        )
+        """
+        Args:
+            x         :: maybe (B, Feat=i, Frame) - Observed variable series to be encoded
+            x_lengths                             - (maybe) effective length during training
+            g         ::       ()                 - Time-invariant global conditioning vector
+        Returns:
+            z         :: maybe (B, Feat=o, Frame) - Latent varible series
+            mu        :: maybe (B, Feat=o, Frame) - μ      of conditional normal distribution q(z|x) = N(μ,σ|x)
+            log_sigma :: maybe (B, Feat=o, Frame) - log(σ) of conditional normal distribution q(z|x) = N(μ,σ|x)
+            x_mask    ::       (1,      1, Frame) - Mask
+        """
+        # Masking :: -> (1, 1, Frame)
+        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+
+        # Transform :: (B, Feat=i, Frame) -> (B, Feat=h, Frame) -> ? -> (B, Feat=2*o, Frame?)
         x = self.pre(x) * x_mask
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
-        return z, m, logs, x_mask
+
+        # Normal distribution :: (B, Feat=2*o, Frame?) -> 2x (B, Feat=o, Frame?) -> (B, Feat=o, Frame?) - reparametrization trick
+        mu, log_sigma = torch.split(stats, self.out_channels, dim=1)
+        z = (mu + torch.randn_like(mu) * torch.exp(log_sigma)) * x_mask
+        return z, mu, log_sigma, x_mask
 
     def remove_weight_norm(self):
         self.enc.remove_weight_norm()
@@ -386,76 +402,84 @@ class SourceModuleHnNSF(torch.nn.Module):
 class GeneratorNSF(torch.nn.Module):
     def __init__(
         self,
-        initial_channel,
+        initial_channel: int,     # Feature dimension size of input feature series
         resblock,
         resblock_kernel_sizes,
         resblock_dilation_sizes,
         upsample_rates,
-        upsample_initial_channel,
+        upsample_initial_channel, # Feature dimension size of main block's input series
         upsample_kernel_sizes,
-        gin_channels,
+        gin_channels,             # Feature dimension size of speaker vector
         sr,
         is_half=False,
     ):
-        super(GeneratorNSF, self).__init__()
+        super().__init__()
+        assert 0 < gin_channels, "gin_channels is now required and should be >0."
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
+        self.upp = np.prod(upsample_rates)
 
         self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates))
         self.m_source = SourceModuleHnNSF(sampling_rate=sr, harmonic_num=0, is_half=is_half)
         self.noise_convs = nn.ModuleList()
-        self.conv_pre = Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3)
-        resblock = modules.ResBlock1 if resblock == "1" else modules.ResBlock2
 
+        # PreNet - Feature series convolution & Speaker vector segFC
+        self.conv_pre = Conv1d(initial_channel, upsample_initial_channel, 7, padding="same")
+        self.cond =     Conv1d(gin_channels,    upsample_initial_channel, 1, padding="same")
+
+        # MainNet
+        resblock = modules.ResBlock1 if resblock == "1" else modules.ResBlock2
         self.ups = nn.ModuleList()
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             c_cur = upsample_initial_channel // (2 ** (i + 1))
-            self.ups.append(
-                weight_norm(ConvTranspose1d(
-                        upsample_initial_channel // (2**i),
-                        upsample_initial_channel // (2 ** (i + 1)),
-                        k, u, padding=(k - u) // 2,
-                ))
-            )
+            #                                                                    half channel                                         ,
+            self.ups.append(weight_norm(ConvTranspose1d(upsample_initial_channel // (2**i), upsample_initial_channel // (2 ** (i + 1)), k, u, padding=(k - u) // 2)))
             if i + 1 < len(upsample_rates):
                 stride_f0 = np.prod(upsample_rates[i + 1 :])
                 self.noise_convs.append(Conv1d(1, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=stride_f0 // 2))
             else:
                 self.noise_convs.append(Conv1d(1, c_cur, kernel_size=1))
-
         self.resblocks = nn.ModuleList()
         for i in range(len(self.ups)):
             ch = upsample_initial_channel // (2 ** (i + 1))
             for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
                 self.resblocks.append(resblock(ch, k, d))
-
-        self.conv_post = Conv1d(ch, 1, 7, 1, padding=3, bias=False)
         self.ups.apply(init_weights)
 
-        if gin_channels != 0:
-            self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
+        # PostNet - Sample series convolution
+        self.conv_post = Conv1d(ch, 1, 7, padding="same", bias=False)
 
-        self.upp = np.prod(upsample_rates)
+    def forward(self, x, f0, g):
+        """
+        Args:
+            x - Feature series
+            f0
+            g - Time-invariant (global) speaker feature
+        """
+        assert g is not None, "global speaker conditioning is now required."
 
-    def forward(self, x, f0, g=None):
         har_source, noi_source, uv = self.m_source(f0, self.upp)
         har_source = har_source.transpose(1, 2)
-        x = self.conv_pre(x)
-        if g is not None:
-            x = x + self.cond(g)
+
+        # PreNet - 'Conv(feat)' + 'SegFC(spk)'
+        x = self.conv_pre(x) + self.cond(g)
 
         for i in range(self.num_upsamples):
+            # LReLU-ConvT-.
+            #      x------+-MRF-
             x = F.leaky_relu(x, modules.LRELU_SLOPE)
             x = self.ups[i](x)
-            x_source = self.noise_convs[i](har_source)
-            x = x + x_source
+            x = x + self.noise_convs[i](har_source)
             xs = None
+            # MRF
             for j in range(self.num_kernels):
                 if xs is None:
                     xs = self.resblocks[i * self.num_kernels + j](x)
                 else:
                     xs += self.resblocks[i * self.num_kernels + j](x)
             x = xs / self.num_kernels
+
+        # -LReLU-Conv-Tanh
         x = F.leaky_relu(x)
         x = self.conv_post(x)
         x = torch.tanh(x)
@@ -482,13 +506,17 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         spec_channels,
         segment_size,
         inter_channels, hidden_channels,
-        filter_channels, n_heads, n_layers, kernel_size, p_dropout,
+        filter_channels, n_heads, n_layers, kernel_size: int, p_dropout,
         resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes,
         spk_embed_dim,
         gin_channels,
         sr,
         **kwargs
     ):
+        """
+        Args:
+            kernel_size - TextEncoder's Conformer FF block conv kernel size (k=1 means SegFC == pure Transformer, not Conformer)
+        """
         super().__init__()
         if type(sr) == type("strr"):
             sr = sr2sr[sr]
@@ -521,23 +549,41 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         Args:
             phone
             phone_lengths
-            pitch         :: (B, T)
+            pitch         :: (B, Frame)
             pitchf
             y
             y_lengths
-            ds            :: (B, 1)
+            ds            :: (B, 1)     - Speaker index
         """
-        # Speaker embedding :: (B, 1) -> (B, Feat=256, T=1)
+        """
+        ds -------> [emb_g] -> g -------.-------------------.-----.
+        phone --.                       |                   |     |
+        pitch --'-> [enc_p] -> μ_p/σ_p  |   z_p <- [flow] <-|     |
+                                     y -'-> [enc_q] -.-> z -'-----+-> [dec] -> o
+                                                     '-> μ_q/σ_q  |
+        pitchf ---------------------------------------------------'
+        """
+        # Speaker embedding :: (B, 1) -> (B, Feat, T=1)
         g = self.emb_g(ds).unsqueeze(-1)
+        # Unit encoder :: () & (B, Frame) -> ()
         m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+        # Posterior encoder :: () -> ()
+        z, mu_q, log_sigma_q, y_mask = self.enc_q(y, y_lengths, g)
         z_p = self.flow(z, y_mask, g=g)
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
         pitchf = commons.slice_segments2(pitchf, ids_slice, self.segment_size)
+        # Decoder :: () & () & (B, Feat, T=1) -> ()
         o = self.dec(z_slice, pitchf, g=g)
-        return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+
+        return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, mu_q, log_sigma_q)
 
     def infer(self, phone, phone_lengths, pitch, nsff0, sid, max_len=None):
+        """
+        sid -------> [emb_g] -> g ------------------.-------------------.
+        phone --.                                   |                   |
+        pitch --'--> [enc_p] -> μ/σ -[Norm] -> z_p -'-> [flow^-1] -> z -+-> [dec] -> o
+        nsff0 ----------------------------------------------------------'
+        """
         g = self.emb_g(sid).unsqueeze(-1)
         m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
         z_p = (m_p + torch.exp(logs_p) * torch.randn_like(m_p) * 0.66666) * x_mask
@@ -594,12 +640,15 @@ class SynthesizerTrnMs256NSFsid_nono(nn.Module):
             y_lengths
             ds :: (B, 1)
         """
+        """
+        ds ----> [emb_g] -> g -------.-------------------.--.
+        phone -> [enc_p] -> μ_p/σ_p  |   z_p <- [flow] <-|  |
+                                  y -'-> [enc_q] -.-> z -'--'-> [dec] -> o
+                                                  '-> μ_q/σ_q
+        """
         # Speaker embedding :: (B, 1) -> (B, Feat=256, T=1)
         g = self.emb_g(ds).unsqueeze(-1)
-        # phone -> [enc_p] -> 
         m_p, logs_p, x_mask = self.enc_p(phone, None, phone_lengths)
-        # y -> [enc_q] -> z -> [flow] -> z_p
-        #                   -> [dec]  -> o
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
         z_p = self.flow(z, y_mask, g=g)
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
@@ -607,6 +656,10 @@ class SynthesizerTrnMs256NSFsid_nono(nn.Module):
         return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
 
     def infer(self, phone, phone_lengths, sid, max_len=None):
+        """
+        sid -------> [emb_g] -> g ------------------.-------------------.
+        phone -----> [enc_p] -> μ/σ -[Norm] -> z_p -'-> [flow^-1] -> z -'-> [dec] -> o
+        """
         g = self.emb_g(sid).unsqueeze(-1)
         m_p, logs_p, x_mask = self.enc_p(phone, None, phone_lengths)
         z_p = (m_p + torch.exp(logs_p) * torch.randn_like(m_p) * 0.66666) * x_mask
@@ -616,9 +669,7 @@ class SynthesizerTrnMs256NSFsid_nono(nn.Module):
 
 
 class SynthesizerTrnMs256NSFsid_sim(nn.Module):
-    """
-    Not used now.
-    """
+    """No posterior encoder (Not used now)."""
 
     def __init__(
         self,
@@ -681,9 +732,14 @@ class SynthesizerTrnMs256NSFsid_sim(nn.Module):
             y_lengths
             ds            :: (B, 1)
         """
-        # Speaker embedding :: (B, 1) -> (B, Feat=256, T=1)
+        """
+        ds --------> [emb_g] -> g -.-------------------.
+        phone --.                  |                   |
+        pitch --'--> [enc_p] -> x -'-> [flow^-1] -> x -+-> [dec] -> o
+        pitchf ----------------------------------------'
+        """
+         # Speaker embedding :: (B, 1) -> (B, Feat=256, T=1)
         g = self.emb_g(ds).unsqueeze(-1)
-        # No logp output, compared to 'no-sim'
         x, x_mask = self.enc_p(phone, pitch, phone_lengths)
         x = self.flow(x, x_mask, g=g, reverse=True)
         z_slice, ids_slice = commons.rand_slice_segments(x, y_lengths, self.segment_size)
@@ -691,7 +747,13 @@ class SynthesizerTrnMs256NSFsid_sim(nn.Module):
         o = self.dec(z_slice, pitchf, g=g)
         return o, ids_slice
 
-    def infer(self, phone, phone_lengths, pitch, pitchf, ds, max_len=None):  # y是spec不需要了现在
+    def infer(self, phone, phone_lengths, pitch, pitchf, ds, max_len=None):
+        """
+        ds --------> [emb_g] -> g -.-------------------.
+        phone --.                  |                   |
+        pitch --'--> [enc_p] -> x -'-> [flow^-1] -> x -+-> [dec] -> o
+        pitchf ----------------------------------------'
+        """
         g = self.emb_g(ds).unsqueeze(-1)  # [b, 256, 1]##1是t，广播的
         x, x_mask = self.enc_p(phone, pitch, phone_lengths)
         x = self.flow(x, x_mask, g=g, reverse=True)

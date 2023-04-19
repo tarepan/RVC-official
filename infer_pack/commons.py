@@ -123,9 +123,12 @@ def shift_1d(x):
     return x
 
 
-def sequence_mask(length, max_length=None):
+def sequence_mask(length, max_length: int = None):
+    """
+    """
     if max_length is None:
         max_length = length.max()
+    # x :: (1, L) = [[0, 1, ..., max_length-1]]
     x = torch.arange(max_length, dtype=length.dtype, device=length.device)
     return x.unsqueeze(0) < length.unsqueeze(1)
 
