@@ -19,7 +19,7 @@ import faiss
         logs/
         weights/
 """
-now_dir = os.getcwd()
+now_dir: str = os.getcwd()
 sys.path.append(now_dir)
 tmp = os.path.join(now_dir, "TEMP")
 shutil.rmtree(tmp, ignore_errors=True)
@@ -644,14 +644,14 @@ def train_index(exp_dir1):
 
 # but5.click(train1key, [exp_dir1, sr2, if_f0_3, trainset_dir4, spk_id5, gpus6, np7, f0method8, save_epoch10, total_epoch11, batch_size12, if_save_latest13, pretrained_G14, pretrained_D15, gpus16, if_cache_gpu17], info3)
 def train1key(
-    exp_dir1,
+    exp_dir1: str,    # Name of experiment directory
     sr2,
     if_f0_3,
     trainset_dir4,
-    spk_id5,
+    spk_id5,          # Speaker index, used as `sid` or `dv`
     gpus6,
     np7,
-    f0method8,
+    f0method8,        # fo extraction method specifier
     save_epoch10,
     total_epoch11,
     batch_size12,
@@ -668,70 +668,56 @@ def train1key(
         infos.append(strr)
         return "\n".join(infos)
 
-    os.makedirs("%s/logs/%s" % (now_dir, exp_dir1), exist_ok=True)
-    #########step1:处理数据
-    open("%s/logs/%s/preprocess.log" % (now_dir, exp_dir1), "w").close()
-    cmd = (
-        python_cmd
-        + " trainset_preprocess_pipeline_print.py %s %s %s %s/logs/%s "
-        % (trainset_dir4, sr_dict[sr2], ncpu, now_dir, exp_dir1)
-        + str(noparallel)
-    )
+    path_exp = f"{now_dir}/logs/{exp_dir1}"
+    os.makedirs(path_exp, exist_ok=True)
+    path_log_preprocess = f"{path_exp}/preprocess.log"
+    path_log_extract_f0 = f"{path_exp}/extract_f0_feature.log"
+
+    #########step1: Preprocessing
+    open(path_log_preprocess, "w").close()
+    cmd = python_cmd + " trainset_preprocess_pipeline_print.py %s %s %s %s " % (trainset_dir4, sr_dict[sr2], ncpu, path_exp) + str(noparallel)
     yield get_info_str("step1:正在处理数据")
     yield get_info_str(cmd)
-    p = Popen(cmd, shell=True)
-    p.wait()
-    with open("%s/logs/%s/preprocess.log" % (now_dir, exp_dir1), "r") as f:
+    Popen(cmd, shell=True).wait()
+    with open(path_log_preprocess, "r") as f:
         print(f.read())
-    #########step2a:提取音高
-    open("%s/logs/%s/extract_f0_feature.log" % (now_dir, exp_dir1), "w")
+
+    ######### step2: Feature extraction
+    ############# step2a: Pitch extraction
+    open(path_log_extract_f0, "w")
     if if_f0_3 == "是":
         yield get_info_str("step2a:正在提取音高")
-        cmd = python_cmd + " extract_f0_print.py %s/logs/%s %s %s" % (
-            now_dir,
-            exp_dir1,
-            np7,
-            f0method8,
-        )
+        cmd = python_cmd + " extract_f0_print.py %s %s %s" % (path_exp, np7, f0method8)
         yield get_info_str(cmd)
-        p = Popen(cmd, shell=True, cwd=now_dir)
-        p.wait()
-        with open("%s/logs/%s/extract_f0_feature.log" % (now_dir, exp_dir1), "r") as f:
+        Popen(cmd, shell=True, cwd=now_dir).wait()
+        with open(path_log_extract_f0, "r") as f:
             print(f.read())
     else:
         yield get_info_str("step2a:无需提取音高")
-    #######step2b:提取特征
+    ############# step2b: Unit extraction
     yield get_info_str("step2b:正在提取特征")
     gpus = gpus16.split("-")
     leng = len(gpus)
     ps = []
     for idx, n_g in enumerate(gpus):
-        cmd = python_cmd + " extract_feature_print.py %s %s %s %s %s/logs/%s" % (
-            device,
-            leng,
-            idx,
-            n_g,
-            now_dir,
-            exp_dir1,
-        )
+        cmd = python_cmd + " extract_feature_print.py %s %s %s %s %s" % (device, leng, idx, n_g, path_exp)
         yield get_info_str(cmd)
-        p = Popen(
-            cmd, shell=True, cwd=now_dir
-        )  # , shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd=now_dir
+        p = Popen(cmd, shell=True, cwd=now_dir)
         ps.append(p)
     for p in ps:
         p.wait()
-    with open("%s/logs/%s/extract_f0_feature.log" % (now_dir, exp_dir1), "r") as f:
+    with open(path_log_extract_f0, "r") as f:
         print(f.read())
-    #######step3a:训练模型
+
+    #######step3a: Train model
     yield get_info_str("step3a:正在训练模型")
     # 生成filelist
-    exp_dir = "%s/logs/%s" % (now_dir, exp_dir1)
-    gt_wavs_dir = "%s/0_gt_wavs" % (exp_dir)
-    co256_dir = "%s/3_feature256" % (exp_dir)
+    exp_dir     = path_exp
+    gt_wavs_dir = f"{path_exp}/0_gt_wavs"
+    co256_dir   = f"{path_exp}/3_feature256"
     if if_f0_3 == "是":
-        f0_dir = "%s/2a_f0" % (exp_dir)
-        f0nsf_dir = "%s/2b-f0nsf" % (exp_dir)
+        f0_dir    = f"{path_exp}/2a_f0"
+        f0nsf_dir = f"{path_exp}/2b-f0nsf"
         names = (
             set([name.split(".")[0] for name in os.listdir(gt_wavs_dir)])
             & set([name.split(".")[0] for name in os.listdir(co256_dir)])
@@ -745,6 +731,11 @@ def train1key(
     opt = []
     for name in names:
         if if_f0_3 == "是":
+            # audiopath = f"{gt_wavs_dir.replace("\\", "\\\\")}/{name}.wav"
+            # text      = f"{  co256_dir.replace("\\", "\\\\")}/{name}.npy"
+            # pitch     = f"{     f0_dir.replace("\\", "\\\\")}/{name}.wav.npy"
+            # pitchf    = f"{  f0nsf_dir.replace("\\", "\\\\")}/{name}.wav.npy"
+            # dv        = f"{spk_id5}"
             opt.append(
                 "%s/%s.wav|%s/%s.npy|%s/%s.wav.npy|%s/%s.wav.npy|%s"
                 % (
@@ -762,15 +753,14 @@ def train1key(
         else:
             opt.append(
                 "%s/%s.wav|%s/%s.npy|%s"
-                % (
-                    gt_wavs_dir.replace("\\", "\\\\"),
-                    name,
-                    co256_dir.replace("\\", "\\\\"),
-                    name,
-                    spk_id5,
-                )
+                % (gt_wavs_dir.replace("\\", "\\\\"), name, co256_dir.replace("\\", "\\\\"), name, spk_id5)
             )
     if if_f0_3 == "是":
+        # audiopath = f"{now_dir}/logs/mute/0_gt_wavs/mute{sr2}.wav"
+        # text      = f"{now_dir}/logs/mute/3_feature256/mute.npy"
+        # pitch     = f"{now_dir}/logs/mute/2a_f0/mute.wav.npy"
+        # pitchf    = f"{now_dir}/logs/mute/2b-f0nsf/mute.wav.npy"
+        # dv        = f"{spk_id5}"
         opt.append(
             "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature256/mute.npy|%s/logs/mute/2a_f0/mute.wav.npy|%s/logs/mute/2b-f0nsf/mute.wav.npy|%s"
             % (now_dir, sr2, now_dir, now_dir, now_dir, spk_id5)
@@ -778,11 +768,14 @@ def train1key(
     else:
         opt.append(
             "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature256/mute.npy|%s"
-            % (now_dir, sr2, now_dir, spk_id5)
+            % (now_dir, sr2, now_dir,                   spk_id5)
         )
-    with open("%s/filelist.txt" % exp_dir, "w") as f:
+
+    # Make `filelist.txt`
+    with open(f"{exp_dir}/filelist.txt", "w") as f:
         f.write("\n".join(opt))
     yield get_info_str("write filelist done")
+
     # Construct training command with configs
     """
     [Base command]
@@ -1067,7 +1060,7 @@ with gr.Blocks() as app:
                 )
             )
             with gr.Row():
-                exp_dir1 = gr.Textbox(label=i18n("输入实验名"), value="mi-test")
+                exp_dir1: str = gr.Textbox(label=i18n("输入实验名"), value="mi-test")
                 sr2 = gr.Radio(
                     label=i18n("目标采样率"),
                     choices=["32k", "40k", "48k"],
