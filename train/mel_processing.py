@@ -49,6 +49,16 @@ hann_window = {}
 
 
 def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False):
+    """
+    Args:
+        y
+        n_fft
+        sampling_rate
+        hop_size
+        win_size
+        center
+    """
+    # Validation
     if torch.min(y) < -1.0:
         print("min value is ", torch.min(y))
     if torch.max(y) > 1.0:

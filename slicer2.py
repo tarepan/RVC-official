@@ -3,6 +3,13 @@ import numpy as np
 
 # This function is obtained from librosa.
 def get_rms(y, frame_length=2048, hop_length=512, pad_mode="constant"):
+    """
+    Args:
+        y :: (T,) - Audio waveform
+    Returns:
+          :: (1, Frame) - Volume RMS
+    """
+    # Padding
     padding = (int(frame_length // 2), int(frame_length // 2))
     y = np.pad(y, padding, mode=pad_mode)
 
@@ -32,89 +39,127 @@ def get_rms(y, frame_length=2048, hop_length=512, pad_mode="constant"):
 
 class Slicer:
     def __init__(self, sr: int, threshold: float = -40., min_length: int = 5000, min_interval: int = 300, hop_size: int = 20, max_sil_kept: int = 5000):
+        """
+        Args:
+            sr           - Input waveform sampling rate [sample/sec]
+            threshold    - (maybe) Silence threshold [dB]
+            min_length   - Minimum length   [msec]
+            min_interval - Minimum interval [msec]
+            hop_size     - Hop size         [msec]
+            max_sil_kept - Mamimum x        [msec]
+        """
+        # Validation
         if not min_length >= min_interval >= hop_size:
-            raise ValueError(
-                "The following condition must be satisfied: min_length >= min_interval >= hop_size"
-            )
+            raise ValueError("The following condition must be satisfied: min_length >= min_interval >= hop_size")
         if not max_sil_kept >= hop_size:
-            raise ValueError(
-                "The following condition must be satisfied: max_sil_kept >= hop_size"
-            )
-        min_interval = sr * min_interval / 1000
+            raise ValueError("The following condition must be satisfied: max_sil_kept >= hop_size")
+
+
         self.threshold = 10 ** (threshold / 20.0)
+        # Params [sample]
         self.hop_size = round(sr * hop_size / 1000)
-        self.win_size = min(round(min_interval), 4 * self.hop_size)
-        self.min_length = round(sr * min_length / 1000 / self.hop_size)
-        self.min_interval = round(min_interval / self.hop_size)
+        ## RMS window
+        self.win_size = min(round(sr * min_interval / 1000), 4 * self.hop_size)
+        # Params [frame] = [sample/sec] * [m*sec] / [m] / [sample/frame]
+        self.min_length   = round(sr * min_length   / 1000 / self.hop_size)
+        self.min_interval = round(sr * min_interval / 1000 / self.hop_size)
         self.max_sil_kept = round(sr * max_sil_kept / 1000 / self.hop_size)
 
-    def _apply_slice(self, waveform, begin, end):
+    def _apply_slice(self, waveform, begin: int, end: int):
+        """
+        Slice a chunk from a waveform.
+        If end index is out of range, end at tail (no error thrown).
+
+        Args:
+            waveform :: (T,) | (Channel, T) - Clipping target
+            begin                           - Clipping start frame index
+            end                             - Clipping  end  frame index
+        Returns:
+            :: (T=t,) | (Channel, T=t) - An audio slice
+        """
         if len(waveform.shape) > 1:
-            return waveform[
-                :, begin * self.hop_size : min(waveform.shape[1], end * self.hop_size)
-            ]
+            return waveform[:, begin * self.hop_size : min(waveform.shape[1], end * self.hop_size)]
         else:
-            return waveform[
-                begin * self.hop_size : min(waveform.shape[0], end * self.hop_size)
-            ]
+            return waveform[   begin * self.hop_size : min(waveform.shape[0], end * self.hop_size)]
 
     # @timeit
     def slice(self, waveform):
-        if len(waveform.shape) > 1:
-            samples = waveform.mean(axis=0)
-        else:
-            samples = waveform
+        """
+        Args:
+            waveform :: NDArray[(T,)|(Channel, T)] - 
+        Returns:
+            :: List[NDArray[(T,)]]
+        """
+        # ToMono :: (T,) | (Channel, T) -> (T,)
+        samples = waveform.mean(axis=0) if len(waveform.shape) > 1 else waveform
+
         if samples.shape[0] <= self.min_length:
             return [waveform]
-        rms_list = get_rms(
-            y=samples, frame_length=self.win_size, hop_length=self.hop_size
-        ).squeeze(0)
+
+        # (T,) -> (1, Frame) -> (Frame)
+        rms_list = get_rms(y=samples, frame_length=self.win_size, hop_length=self.hop_size).squeeze(0)
+
+        # List[(pos0, pos1)]
         sil_tags = []
         silence_start = None
         clip_start = 0
-        for i, rms in enumerate(rms_list):
-            # Keep looping while frame is silent.
-            if rms < self.threshold:
-                # Record start of silent frames.
+        for frame_idx, rms_i in enumerate(rms_list):
+            # Silence detection, then pass
+            if rms_i < self.threshold:
                 if silence_start is None:
-                    silence_start = i
+                    silence_start = frame_idx
                 continue
+
+            # This is Non-silence frame
+
             # Keep looping while frame is not silent and silence start has not been recorded.
             if silence_start is None:
                 continue
+
+            """
+            [not is_leading_silence]
+                [A: Leading non-silence]
+
+                ^-----
+
+                [B: Short leading silence]
+
+                _________^------
+                
+                --------------
+                max_sil_kept
+            """
+            """
+            [not need_slice_middle]
+                [A: short silence]
+
+                ----._____^-----
+
+                 |_________|
+                 min_interval
+
+                [B: ?]
+            """
             # Clear recorded silence start if interval is not enough or clip is too short
-            is_leading_silence = silence_start == 0 and i > self.max_sil_kept
-            need_slice_middle = (
-                i - silence_start >= self.min_interval
-                and i - clip_start >= self.min_length
-            )
+            is_leading_silence = (silence_start == 0) and (frame_idx > self.max_sil_kept)
+            need_slice_middle = (frame_idx - silence_start >= self.min_interval) and (frame_idx - clip_start >= self.min_length)
             if not is_leading_silence and not need_slice_middle:
                 silence_start = None
                 continue
+
             # Need slicing. Record the range of silent frames to be removed.
-            if i - silence_start <= self.max_sil_kept:
-                pos = rms_list[silence_start : i + 1].argmin() + silence_start
+            if (frame_idx - silence_start) <= self.max_sil_kept:
+                pos = rms_list[silence_start : frame_idx + 1].argmin() + silence_start
                 if silence_start == 0:
                     sil_tags.append((0, pos))
                 else:
                     sil_tags.append((pos, pos))
                 clip_start = pos
-            elif i - silence_start <= self.max_sil_kept * 2:
-                pos = rms_list[
-                    i - self.max_sil_kept : silence_start + self.max_sil_kept + 1
-                ].argmin()
-                pos += i - self.max_sil_kept
-                pos_l = (
-                    rms_list[
-                        silence_start : silence_start + self.max_sil_kept + 1
-                    ].argmin()
-                    + silence_start
-                )
-                pos_r = (
-                    rms_list[i - self.max_sil_kept : i + 1].argmin()
-                    + i
-                    - self.max_sil_kept
-                )
+            elif (frame_idx - silence_start) <= (self.max_sil_kept * 2):
+                pos = rms_list[frame_idx - self.max_sil_kept : silence_start + self.max_sil_kept + 1].argmin()
+                pos += frame_idx - self.max_sil_kept
+                pos_l = rms_list[silence_start : silence_start + self.max_sil_kept + 1].argmin() + silence_start
+                pos_r = rms_list[frame_idx - self.max_sil_kept : frame_idx + 1].argmin() + frame_idx - self.max_sil_kept
                 if silence_start == 0:
                     sil_tags.append((0, pos_r))
                     clip_start = pos_r
@@ -122,17 +167,8 @@ class Slicer:
                     sil_tags.append((min(pos_l, pos), max(pos_r, pos)))
                     clip_start = max(pos_r, pos)
             else:
-                pos_l = (
-                    rms_list[
-                        silence_start : silence_start + self.max_sil_kept + 1
-                    ].argmin()
-                    + silence_start
-                )
-                pos_r = (
-                    rms_list[i - self.max_sil_kept : i + 1].argmin()
-                    + i
-                    - self.max_sil_kept
-                )
+                pos_l = rms_list[silence_start : silence_start + self.max_sil_kept + 1].argmin() + silence_start
+                pos_r = rms_list[frame_idx - self.max_sil_kept : frame_idx + 1].argmin() + frame_idx - self.max_sil_kept
                 if silence_start == 0:
                     sil_tags.append((0, pos_r))
                 else:
@@ -141,28 +177,26 @@ class Slicer:
             silence_start = None
         # Deal with trailing silence.
         total_frames = rms_list.shape[0]
-        if (
-            silence_start is not None
-            and total_frames - silence_start >= self.min_interval
-        ):
+        if (silence_start is not None) and (total_frames - silence_start >= self.min_interval):
             silence_end = min(total_frames, silence_start + self.max_sil_kept)
             pos = rms_list[silence_start : silence_end + 1].argmin() + silence_start
             sil_tags.append((pos, total_frames + 1))
+
         # Apply and return slices.
+        ## No slicing
         if len(sil_tags) == 0:
             return [waveform]
+        ## Slice non-silence chunks
         else:
             chunks = []
             if sil_tags[0][0] > 0:
-                chunks.append(self._apply_slice(waveform, 0, sil_tags[0][0]))
-            for i in range(len(sil_tags) - 1):
-                chunks.append(
-                    self._apply_slice(waveform, sil_tags[i][1], sil_tags[i + 1][0])
-                )
+                chunks.append(self._apply_slice(waveform, 0,                       sil_tags[0][0]))
+
+            for tag_idx in range(len(sil_tags) - 1):
+                chunks.append(self._apply_slice(waveform, sil_tags[tag_idx][1],  sil_tags[tag_idx + 1][0]))
+
             if sil_tags[-1][1] < total_frames:
-                chunks.append(
-                    self._apply_slice(waveform, sil_tags[-1][1], total_frames)
-                )
+                chunks.append(self._apply_slice(waveform, sil_tags[-1][1],         total_frames))
             return chunks
 
 

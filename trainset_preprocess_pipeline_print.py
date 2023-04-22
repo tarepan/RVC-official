@@ -1,6 +1,16 @@
 """
 Load raw audios, then modify and resample.
 
+Processes:
+  1. Resampling fs=`sr`
+  2. HPF 48Hz
+  3. Silence clip
+  3. Chunk
+  4. Volume normalize
+  5. Preemphasis?
+  6. s16-nize (-> output1)
+  7. Resampling fs=16k (-> output2)
+
 [Before Run]
     {inp_root}/
         {xxx}.wav                       # Input waveform
@@ -13,9 +23,9 @@ Load raw audios, then modify and resample.
     {exp_dir}/
         preprocess.log                  # Appended
         0_gt_wavs/
-            {file_idx}_{slice_idx}.wav  # Output, preprocessed waveform, srHz/s16
+            {file_idx}_{slice_idx}.wav  # Output, processed and resampled waveform, srHz/s16
         1_16k_wavs/
-            {file_idx}_{slice_idx}.wav  # Output, preprocessed waveform, 16kHz/s16
+            {file_idx}_{slice_idx}.wav  # Output, processed and resampled waveform, 16kHz/s16
 """
 
 import sys, os, traceback, multiprocessing
@@ -34,8 +44,8 @@ now_dir = os.getcwd()
 sys.path.append(now_dir)
 ## Args
 inp_root:   str  =     sys.argv[1]           # Data root, directly under which raw .wav files should exist
-sr:         int  = int(sys.argv[2])          # Audio sampling rate
-n_p:        int  = int(sys.argv[3])          # (maybe) The number of process for MP
+sr:         int  = int(sys.argv[2])          # Audio target sampling rate, used for resampling
+n_p:        int  = int(sys.argv[3])          # The number of process for MP
 exp_dir:    str  =     sys.argv[4]           # Experiment directory, under which preprocessed waveforms are saved
 noparallel: bool =     sys.argv[5] == "True" # Whether to preprocess non-parallelly
 
@@ -58,9 +68,12 @@ class PreProcess:
         """
         self.slicer = Slicer(sr=sr, threshold=-40, min_length=800, min_interval=400, hop_size=15, max_sil_kept=150)
         self.sr = sr
-        self.bh, self.ah = signal.butter(N=5, Wn=48, btype="high", fs=self.sr)
-        self.per = 3.7
-        self.overlap = 0.3
+
+        # Filter - Parameters of 48Hz high-pass filter
+        self.bh, self.ah = signal.butter(N=5, Wn=48, btype="high", fs=sr)
+
+        self.per = 3.7     # Standard chunk length  [sec]
+        self.overlap = 0.3 # Chunk-to-Chunk overlap [sec]
         self.tail = self.per + self.overlap
         self.max = 0.95
         self.alpha = 0.8
@@ -85,6 +98,7 @@ class PreProcess:
         filename = f"{file_idx}_{slice_idx}.wav"
 
         # NOTE: Amplitude normalize & preemphasis...?
+        # NOTE: Audible difference seems to be very small (loudness is ofcourse changed)
         tmp_audio = (tmp_audio / np.abs(tmp_audio).max() * (self.max * self.alpha)) + (1 - self.alpha) * tmp_audio
         wavfile.write(f"{self.gt_wavs_dir}/{filename}", self.sr, (tmp_audio * 32768).astype(np.int16))
 
@@ -99,30 +113,37 @@ class PreProcess:
             file_idx - File index in a data root
         """
         try:
-            # audio :: (T,) - in range [-1, 1], sr=self.sr
+            # 1. audio :: (T,) - in range [-1, 1], sr=self.sr
             audio = load_audio(path_ipt, self.sr)
 
+            # 2. Filtering - Cut below 48Hz
             audio = signal.filtfilt(self.bh, self.ah, audio)
 
-            # Slice & Preprocess
-            slice_idx = 0
-            for audio in self.slicer.slice(audio):
-                i = 0
-                while 1:
-                    start = int(self.sr * (self.per - self.overlap) * i)
-                    i += 1
-                    if len(audio[start:]) > self.tail * self.sr:
-                        # Slice
-                        tmp_audio = audio[start : start + int(self.per * self.sr)]
-                        # Preprocess
-                        self.norm_write(tmp_audio, file_idx, slice_idx)
-                        slice_idx += 1
+            # 3. Silence clipping :: (T,) -> List[NDArray[(L,)]] - Convert an audio into continuous slices (no silence within a slice)
+            slices = self.slicer.slice(audio)
+
+            # 4. Chunking & 5-7. Processing
+            total_chunk_idx = 0     # Chunk index in a audio
+            for audio_slice in slices:
+                slice_chunk_idx = 0 # Chunk index in a slice
+                while True:
+                    chunk_hop_sec = self.per - self.overlap # [sec]
+                    start = int(self.sr * chunk_hop_sec * slice_chunk_idx)
+                    len_chunk = int(self.per * self.sr)
+                    end = start + len_chunk
+                    slice_chunk_idx += 1
+                    if len(audio_slice[start:]) > self.tail * self.sr:
+                        chunk = audio_slice[start : end]
+                        self.norm_write(chunk, file_idx, total_chunk_idx)
+                        total_chunk_idx += 1
                     else:
-                        # Slice - tail
-                        tmp_audio = audio[start:]
+                        # Tail
+                        chunk = audio_slice[start:]
                         break
                 # Preprocess - Tail
-                self.norm_write(tmp_audio, file_idx, slice_idx)
+                self.norm_write(chunk, file_idx, total_chunk_idx)
+                # NOTE: maybe this is needed, but not exist. Seems to be a bug.
+                # total_chunk_idx += 1
             println(f"{path_ipt}->Suc.")
 
         except:
@@ -130,7 +151,7 @@ class PreProcess:
             println(f"{path_ipt}->{traceback.format_exc()}")
 
     def pipeline_mp(self, infos):
-        """Preprocess several data on a process.
+        """⚡ Preprocess several data on a process.
         Args:
             infos
                 path_ipt :: str - Path to the input file candidate (no guarantee of .wav or even file (could be dir))
@@ -140,6 +161,7 @@ class PreProcess:
             self.pipeline(path_ipt, file_idx)
 
     def pipeline_mp_inp_dir(self, inp_root: str, n_p: int):
+        """⚡ Run multi-process preprocessing"""
         try:
             # infos :: (path_ipt :: str, file_idx :: int)[] - List up all items directly under the `inp_root`
             infos = [(f"{inp_root}/{file_name}", file_idx) for file_idx, file_name in enumerate(sorted(list(os.listdir(inp_root))))]
@@ -160,6 +182,7 @@ class PreProcess:
 
 
 def preprocess_trainset(inp_root: str, sr: int, n_p: int, exp_dir: str):
+    """⚡ Execute runner."""
     pp = PreProcess(sr, exp_dir)
     println("start preprocess")
     println(sys.argv)
@@ -168,4 +191,5 @@ def preprocess_trainset(inp_root: str, sr: int, n_p: int, exp_dir: str):
 
 
 if __name__ == "__main__":
+    # ⚡
     preprocess_trainset(inp_root, sr, n_p, exp_dir)

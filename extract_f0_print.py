@@ -1,11 +1,11 @@
 """
-Load pre-resampled 16kHz audios, then convert them to coarse/fine fo series.
+Load preprocessed 16kHz audios, then convert them to coarse/fine fo contour.
 
 [Before Run]
     {exp_dir}/
         extract_f0_feature.log  # Not required, but can exist
         1_16k_wavs/
-            {xxx}.wav           # input, pre-resampled 16kHz audio
+            {xxx}.wav           # input, preprocessed 16kHz audio
 
 [After Run]
     {exp_dir}/
@@ -13,9 +13,9 @@ Load pre-resampled 16kHz audios, then convert them to coarse/fine fo series.
         1_16k_wavs/
             {xxx}.wav           # No change
         2a_f0/
-            {xxx}.wav.npy       # Output, generated Coarse fo series
+            {xxx}.wav.npy       # Output, generated Coarse fo contour
         2b-f0nsf/
-            {xxx}.wav.npy       # Output, generated   Fine fo series
+            {xxx}.wav.npy       # Output, generated   Fine fo contour
 """
 
 import os, traceback, sys, logging
@@ -30,8 +30,8 @@ import pyworld
 logging.getLogger("numba").setLevel(logging.WARNING)
 
 # Args
-exp_dir: str  =     sys.argv[1]
-n_p: int      = int(sys.argv[2])
+exp_dir:  str =     sys.argv[1]
+n_p:      int = int(sys.argv[2])
 f0method: str =     sys.argv[3]
 
 # Logger
@@ -43,15 +43,10 @@ def printt(strr):
 
 
 class FeatureInput(object):
-    """Coarse/Fine fo extractor."""
-    def __init__(self, samplerate: int = 16000, hop_size: int = 160):
-        """
-        Args:
-            samplerate - Audio target sampling rate (for resampling)
-            hop_size
-        """
-        self.fs = samplerate
-        self.hop = hop_size
+    """Coarse/Fine fo contour extractor."""
+    def __init__(self):
+        self.fs = 16000 # Audio target sampling rate (for resampling) [sample/sec]
+        self.hop = 160  # fo analysis hop size [sample/frame], 160 is equal to 10 msec under sr=16000
 
         # fo min/max configuration
         self.f0_min = 50.0
@@ -68,49 +63,47 @@ class FeatureInput(object):
             path      - Path to the audio .wav file
             f0_method - "pm" | "harvest" | "dio"
         Returns:
-            f0 :: (Frame,)
+            f0 :: (Frame,) - Fine fo contour, 100Hz (10msec/frame)
         """
-        # Load waveform
-        x, sr = librosa.load(path, self.fs)
-        p_len = x.shape[0] // self.hop
-        assert sr == self.fs
+        # Load
+        x = librosa.load(path, sr=self.fs)[0]
 
         # Extraction
         ## Praat
         if f0_method == "pm":
-            time_step = 160 / 16000 * 1000
-            # Same as `self.f0_min`/`self.f0_max` but Int
-            f0_min, f0_max = 50, 1100
+            time_step = self.hop / self.fs * 1000
             f0 = (
-                parselmouth.Sound(x, sr)
-                .to_pitch_ac(time_step=time_step / 1000, voicing_threshold=0.6, pitch_floor=f0_min, pitch_ceiling=f0_max)
+                parselmouth.Sound(x, self.fs)
+                .to_pitch_ac(time_step=time_step / 1000, voicing_threshold=0.6, pitch_floor=int(self.f0_min), pitch_ceiling=int(self.f0_max))
                 .selected_array["frequency"]
             )
+            # Zero Padding
+            ## The number of frames
+            p_len = x.shape[0] // self.hop
             pad_size = (p_len - len(f0) + 1) // 2
             if pad_size > 0 or p_len - len(f0) - pad_size > 0:
-                # zero-padding
                 f0 = np.pad(f0, [[pad_size, p_len - len(f0) - pad_size]], mode="constant")
 
         ## Harvest + Stonemask
         # NOTE: Stonemask is not needed for Harvest, isn't it...?
         elif f0_method == "harvest":
-            f0, t = pyworld.harvest(x.astype(np.double), fs=sr, f0_ceil=self.f0_max, f0_floor=self.f0_min, frame_period=1000 * self.hop / sr)
+            f0, t = pyworld.harvest(x.astype(np.double), fs=self.fs, f0_ceil=self.f0_max, f0_floor=self.f0_min, frame_period=1000 * self.hop / self.fs)
             f0 = pyworld.stonemask(x.astype(np.double), f0, t, self.fs)
 
         ## DIO + Stonemask
         elif f0_method == "dio":
-            f0, t = pyworld.dio(    x.astype(np.double), fs=sr, f0_ceil=self.f0_max, f0_floor=self.f0_min, frame_period=1000 * self.hop / sr)
+            f0, t = pyworld.dio(    x.astype(np.double), fs=self.fs, f0_ceil=self.f0_max, f0_floor=self.f0_min, frame_period=1000 * self.hop / self.fs)
             f0 = pyworld.stonemask(x.astype(np.double), f0, t, self.fs)
 
         return f0
 
     def coarse_f0(self, f0):
-        """Fine-fo to Coarse-fo.
+        """Fine-fo contour to Coarse-fo contour.
 
         Args:
-            f0        :: (Frame,) - Fine fo
+            f0        :: (Frame,) - Fine   fo contour, 100Hz (10msec/frame)
         Returns:
-            f0_coarse :: (Frame,) - Coarse fo
+            f0_coarse :: (Frame,) - Coarse fo contour, 100Hz (10msec/frame)
         """
         f0_mel = 1127 * np.log(1 + f0 / 700)
         f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - self.f0_mel_min) * (self.f0_bin - 2) / (self.f0_mel_max - self.f0_mel_min) + 1
@@ -129,13 +122,13 @@ class FeatureInput(object):
         return f0_coarse
 
     def go(self, paths, f0_method: str):
-        """
+        """⚡
         Args:
             paths
             f0_method              - "pm" | "harvest" | "dio"
         Outputs:
-            coarse_pit :: (Frame,) - Coarse fo at `opt_path1` (e.g. f"{exp_dir}/2a_f0/{xxx}.wav.npy")
-            featur_pit :: (Frame,) - Fine   fo at `opt_path2` (e.g. f"{exp_dir}/2b-f0nsf/{xxx}.wav.npy")
+            coarse_pit :: (Frame,) - 100Hz Coarse fo contour at `opt_path1` (e.g. f"{exp_dir}/2a_f0/{xxx}.wav.npy")
+            featur_pit :: (Frame,) - 100Hz Fine   fo contour at `opt_path2` (e.g. f"{exp_dir}/2b-f0nsf/{xxx}.wav.npy")
         """
         if len(paths) == 0:
             printt("no-f0-todo")
@@ -148,11 +141,11 @@ class FeatureInput(object):
                     if os.path.exists(opt_path1 + ".npy") and os.path.exists(opt_path2 + ".npy"):
                         continue
 
-                    # Fine fo :: (Frame,) - For NSF
+                    # Fine fo contour :: (Frame,) - For NSF
                     featur_pit = self.compute_f0(inp_path, f0_method)
                     np.save(opt_path2, featur_pit, allow_pickle=False)
 
-                    # Coarse fo :: (Frame,) - For ori
+                    # Coarse fo contour :: (Frame,) - For ori
                     coarse_pit = self.coarse_f0(featur_pit)
                     np.save(opt_path1, coarse_pit, allow_pickle=False)
 
@@ -164,12 +157,13 @@ class FeatureInput(object):
 
 
 if __name__ == "__main__":
+    """⚡"""
     printt(sys.argv)
 
     # I/O directories
-    inp_root  = f"{exp_dir}/1_16k_wavs" # .wav
-    opt_root1 = f"{exp_dir}/2a_f0"      # Coarse fo
-    opt_root2 = f"{exp_dir}/2b-f0nsf"   # Fine   fo
+    inp_root  = f"{exp_dir}/1_16k_wavs" # 16kHz wave
+    opt_root1 = f"{exp_dir}/2a_f0"      # Coarse fo contour
+    opt_root2 = f"{exp_dir}/2b-f0nsf"   # Fine   fo contour
     os.makedirs(opt_root1, exist_ok=True)
     os.makedirs(opt_root2, exist_ok=True)
 
@@ -185,7 +179,7 @@ if __name__ == "__main__":
         opt_path2 = f"{opt_root2}/{name}"
         paths.append([inp_path, opt_path1, opt_path2])
 
-    # Run fo extraction w/ multi-thread
+    # Run fo contour extraction w/ multi-thread
     featureInput = FeatureInput()
     ps = []
     for i in range(n_p):

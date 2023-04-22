@@ -1,11 +1,11 @@
 """
-Load pre-resampled 16kHz audios, then convert them to HuBERT feature series.
+Load preprocessed 16kHz audios, then convert them to HuBERT feature series.
 
 [Before Run]
     {exp_dir}/
         extract_f0_feature.log  # Not required, but can exist
         1_16k_wavs/
-            {xxx}.wav           # input, pre-resampled 16kHz audio
+            {xxx}.wav           # input, preprocessed 16kHz audio
 
 [After Run]
     {exp_dir}/
@@ -32,7 +32,7 @@ def readwave(wav_path: str, normalize=False):
         wav_path  - Path to .wav file, which should contain sr=16000 audio
         normalize - Whether to normalize audio
     Returns:
-        :: (Feat=1, T) - Audio waveform
+        :: (B=1, T) - Audio waveform
     """
     # Load :: mono (T,) | stereo (T, Channel=2)
     wav, sr = sf.read(wav_path)
@@ -49,13 +49,13 @@ def readwave(wav_path: str, normalize=False):
         with torch.no_grad():
             feats = F.layer_norm(feats, feats.shape)
     
-    # Reshape :: (T,) -> (Feat=1, T)
+    # Reshape :: (T,) -> (B=1, T)
     feats = feats.view(1, -1)
 
     return feats
 
 
-# Configs
+# ⚡Configs
 ## args
 n_part: int =  int(sys.argv[2]) # The number of GPUs
 i_part: int =  int(sys.argv[3]) # GPU index
@@ -74,7 +74,7 @@ os.makedirs(outPath, exist_ok=True)
 ## Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Logger
+# ⚡Logger
 f = open(f"{exp_dir}/extract_f0_feature.log", "a+")
 def printt(strr):
     """Print to STDOUT and log file."""
@@ -86,7 +86,7 @@ printt(sys.argv)
 printt(exp_dir)
 
 # Initialization - HuBERT Wave-to-Unit model
-# TODO: Check relationship with 'sr=16k/hop_size=320'
+## Accept only 16kHz audio, yield hop_size 320 (20msec/frame) unit series
 printt(f"load model on {device} from {model_path}")
 models, saved_cfg, _ = checkpoint_utils.load_model_ensemble_and_task([model_path], suffix="")
 model = models[0].to(device)
@@ -94,7 +94,7 @@ if device != "cpu":
     model = model.half()
 model.eval()
 
-## Data selection - In charge on this GPU (i, i+n*1, i+n*2, ...)
+#⚡ Data selection - In charge on this GPU (i, i+n*1, i+n*2, ...)
 todo = sorted(list(os.listdir(wavPath)))[i_part::n_part]
 
 # Run
@@ -107,18 +107,18 @@ else:
         # Extract unit series from audio file, then save it as a .npy file.
         try:
             if file.endswith(".wav"):
-                # Path and Validation
+                #⚡ Path and Validation
                 wav_path = f"{wavPath}/{file}"                       # e.g. f"{exp_dir}/1_16k_wavs/{xxx}.wav"
                 out_path = f"{outPath}/{file.replace('wav', 'npy')}" # e.g. f"{exp_dir}/3_feature256/{xxx}.npy"
                 if os.path.exists(out_path):
                     continue
 
                 # Forward
-                ## wave :: (Feat=1, T) - Audio waveform
+                ## wave :: (B=1, T) - Audio waveform
                 wave = readwave(wav_path, normalize=saved_cfg.task.normalize)
-                ## mask placeholder :: (Feat=1, T) -> (Feat=1, T)
+                ## mask placeholder :: (B=1, T) -> (B=1, T)
                 mask_placeholder = torch.BoolTensor(wave.shape).fill_(False).to(device)
-                ## Wave-to-Unit :: (Feat=1, T) -> () - Unit series
+                ## Wave-to-Unit :: (B=1, T) -> (B=1, Frame, Feat) -> (Frame, Feat) - Unit series
                 inputs = {
                     "source": wave.half().to(device) if device != "cpu" else wave.to(device),
                     "padding_mask": mask_placeholder,
@@ -134,7 +134,7 @@ else:
                 else:
                     printt("%s-contains nan" % file)
 
-                # Progress report
+                #⚡ Progress report
                 if idx % report_interval == 0:
                     printt(f"now-{len(todo)},all-{idx},{file},{feats.shape}")
         except:
