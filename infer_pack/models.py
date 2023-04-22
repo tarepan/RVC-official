@@ -24,12 +24,11 @@ class TextEncoder256(nn.Module):
         super().__init__()
         # Common params
         self.hidden_channels = hidden_channels
-        # Phone Embedding
+        # PreNet - Phone/fo Embedding & LReLU
         self.emb_phone = nn.Linear(256, hidden_channels)
-        self.lrelu = nn.LeakyReLU(0.1, inplace=True)
-        # fo embedding
-        if f0 == True:
+        if f0:
             self.emb_pitch = nn.Embedding(256, hidden_channels)
+        self.lrelu = nn.LeakyReLU(0.1, inplace=True)
         # Main Encoder
         self.filter_channels, self.n_heads, self.n_layers, self.kernel_size, self.p_dropout = filter_channels, n_heads, n_layers, kernel_size, p_dropout
         self.encoder = attentions.Encoder(hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
@@ -40,28 +39,32 @@ class TextEncoder256(nn.Module):
     def forward(self, phone, pitch, lengths):
         """
         Args:
-            phone
-            pitch
-            lengths
+            phone     :: (B, Frame, Feat) - Unit series
+            pitch     :: (B, Frame)       - Coarse fo contour
+            lengths   :: (B,)             - Effective length of each series in phone/pitch
         Returns:
             mu        :: maybe (B, Feat=o, Frame) - Normal distribution's μ parameter
             log_sigma :: maybe (B, Feat=o, Frame) - Normal distribution's σ parameter
-            x_mask    ::       (1,      1, Frame) - Mask
+            x_mask    ::       (1,      1, Frame) - Tail-padding mask
         """
-        # Embedding
-        if pitch == None:
-            x = self.emb_phone(phone)
-        else:
-            x = self.emb_phone(phone) + self.emb_pitch(pitch)
-        x = x * math.sqrt(self.hidden_channels) # :: (B, Frame, Feat)
+        # PreNet - Embedding + scaling
+        ## Unit embedding :: (B, Frame, Feat) -> (B, Frame, Feat=h)
+        x = self.emb_phone(phone)
+        ## Pitch embedding :: (B, Frame) -> (B, Frame, Feat=h)
+        if pitch is not None:
+            x = x + self.emb_pitch(pitch)
+        ## Scaling :: (B, Frame, Feat=h) -> (B, Frame, Feat=h) -> (B, Feat=h, Frame)
+        x = x * math.sqrt(self.hidden_channels)
         x = self.lrelu(x)
+        x = torch.transpose(x, 1, -1)
 
-        # Encoder
-        x = torch.transpose(x, 1, -1)  # :: (B, Frame, Feat) -> (B, Feat, Frame)
-        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype) # :: (1, 1, Frame)
+        ## Tail-padding mask :: (B,) -> (B, Frame) -> (B, Feat=1, Frame)
+        x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype)
+
+        # Encoder :: (B, Feat, Frame) -> (B, Feat, Frame)
         x = self.encoder(x * x_mask, x_mask)
 
-        # PostNet :: (B, Feat=h, Frame) -> (B, Feat=2*o, Frame) -> 2x (B, Feat=o, Frame)
+        # PostNet :: (B, Feat, Frame) -> (B, Feat=2*o, Frame) -> 2x (B, Feat=o, Frame)
         stats = self.proj(x) * x_mask
         mu, log_sigma = torch.split(stats, self.out_channels, dim=1)
 
@@ -94,8 +97,8 @@ class TextEncoder256Sim(nn.Module):
     def forward(self, phone, pitch, lengths):
         """
         Args:
-            phone
-            pitch
+            phone     :: (B, Frame, Feat) - Unit series
+            pitch     :: (B, Frame)       - Coarse fo contour
             lengths
         Returns:
             x         :: maybe (B, Feat=o, Frame) - Encoded series
@@ -111,6 +114,7 @@ class TextEncoder256Sim(nn.Module):
 
         # Encoder
         x = torch.transpose(x, 1, -1)  # [b, h, t]
+        ## Tail-padding mask :: (B,) -> (B, Frame) -> (B, Feat=1, Frame)
         x_mask = torch.unsqueeze(commons.sequence_mask(lengths, x.size(2)), 1).to(x.dtype)
         x = self.encoder(x * x_mask, x_mask)
 
@@ -180,7 +184,7 @@ class PosteriorEncoder(nn.Module):
             log_sigma :: maybe (B, Feat=o, Frame) - log(σ) of conditional normal distribution q(z|x) = N(μ,σ|x)
             x_mask    ::       (1,      1, Frame) - Mask
         """
-        # Masking :: -> (1, 1, Frame)
+        ## Tail-padding mask :: (B,) -> (B, Frame) -> (B, Feat=1, Frame)
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
 
         # Transform :: (B, Feat=i, Frame) -> (B, Feat=h, Frame) -> ? -> (B, Feat=2*o, Frame?)
@@ -508,8 +512,8 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         inter_channels, hidden_channels,
         filter_channels, n_heads, n_layers, kernel_size: int, p_dropout,
         resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes,
-        spk_embed_dim,
-        gin_channels,
+        spk_embed_dim: int, # The number of speakers in embedding
+        gin_channels : int, # Channel dimension size of speaker embedding vector
         sr,
         **kwargs
     ):
@@ -522,22 +526,21 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
             sr = sr2sr[sr]
         # Training params
         self.segment_size = segment_size
-        # Common params
-        self.inter_channels, self.hidden_channels, self.gin_channels = inter_channels, hidden_channels, gin_channels
-        # Phone Encoder (No `f0=False` compared to 'no-fo')
-        self.filter_channels, self.n_heads, self.n_layers, self.kernel_size, self.p_dropout = filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        # Global speaker embedding
+        self.emb_g = nn.Embedding(spk_embed_dim, gin_channels)
+        # PriorEncoder - PhoneEncoder/Flow
         self.enc_p = TextEncoder256(inter_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
-        # Decoder (Different model, w/ `sr` & `is_half`)
-        self.resblock, self.resblock_kernel_sizes, self.resblock_dilation_sizes, self.upsample_rates, self.upsample_initial_channel, self.upsample_kernel_sizes = resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes
-        self.dec = GeneratorNSF(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels, sr=sr, is_half=kwargs["is_half"])
-        # Posterior Encoder (same as 'no-fo')
-        self.spec_channels = spec_channels
-        self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
-        # Flow (same as 'no-fo')
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 3, gin_channels=gin_channels)
-        # Global speaker embedding (same as 'no-fo')
-        self.spk_embed_dim=spk_embed_dim
-        self.emb_g = nn.Embedding(self.spk_embed_dim, gin_channels)
+        # PosteriorEncoder
+        self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
+        # Decoder
+        self.dec = GeneratorNSF(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels, sr=sr, is_half=kwargs["is_half"])
+        # Remnants
+        self.inter_channels, self.hidden_channels, self.gin_channels = inter_channels, hidden_channels, gin_channels
+        self.filter_channels, self.n_heads, self.n_layers, self.kernel_size, self.p_dropout = filter_channels, n_heads, n_layers, kernel_size, p_dropout
+        self.resblock, self.resblock_kernel_sizes, self.resblock_dilation_sizes, self.upsample_rates, self.upsample_initial_channel, self.upsample_kernel_sizes = resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes
+        self.spec_channels = spec_channels
+        self.spk_embed_dim = spk_embed_dim
 
     def remove_weight_norm(self):
         self.dec.remove_weight_norm()
@@ -547,13 +550,13 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
     def forward(self, phone, phone_lengths, pitch, pitchf, y, y_lengths, ds):
         """
         Args:
-            phone
-            phone_lengths
-            pitch         :: (B, Frame)
-            pitchf
-            y
+            phone         :: (B, Frame, Feat) - Unit series
+            phone_lengths :: (B,)             - Effective length of each series in phone
+            pitch         :: (B, Frame)       - Coarse fo series
+            pitchf        :: (B, Frame)       - Fine   fo series
+            y             :: ()               - Observed variable series (e.g. Linear spectrogram)
             y_lengths
-            ds            :: (B, 1)     - Speaker index
+            ds            :: (B, 1)           - Speaker index
         """
         """
         ds -------> [emb_g] -> g -------.-------------------.-----.
@@ -565,7 +568,7 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         """
         # Speaker embedding :: (B, 1) -> (B, Feat, T=1)
         g = self.emb_g(ds).unsqueeze(-1)
-        # Unit encoder :: () & (B, Frame) -> ()
+        # Unit encoder :: (B, Frame, Feat) & (B, Frame) -> (B, Feat, Frame)
         m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
         # Posterior encoder :: () -> ()
         z, mu_q, log_sigma_q, y_mask = self.enc_q(y, y_lengths, g)
@@ -601,8 +604,8 @@ class SynthesizerTrnMs256NSFsid_nono(nn.Module):
         inter_channels, hidden_channels,
         filter_channels, n_heads, n_layers, kernel_size, p_dropout,
         resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes,
-        spk_embed_dim,
-        gin_channels, # Feature dimension size of global speaker embedding
+        spk_embed_dim: int, # The number of speakers in embedding
+        gin_channels,       # Feature dimension size of global speaker embedding
         sr=None,
         **kwargs
     ):
@@ -623,8 +626,9 @@ class SynthesizerTrnMs256NSFsid_nono(nn.Module):
         # Flow
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 3, gin_channels=gin_channels)
         # Global speaker embedding
+        self.emb_g = nn.Embedding(spk_embed_dim, gin_channels)
+        # Remnants
         self.spk_embed_dim = spk_embed_dim
-        self.emb_g = nn.Embedding(self.spk_embed_dim, gin_channels)
 
     def remove_weight_norm(self):
         self.dec.remove_weight_norm()
@@ -688,9 +692,9 @@ class SynthesizerTrnMs256NSFsid_sim(nn.Module):
         upsample_rates,
         upsample_initial_channel,
         upsample_kernel_sizes,
-        spk_embed_dim,
+        spk_embed_dim            : int,     # The number of speakers in embedding
         # hop_length,
-        gin_channels=0,
+        gin_channels             : int = 0, # Feature dimension size of global speaker embedding
         use_sdp=True,
         **kwargs
     ):
@@ -714,8 +718,9 @@ class SynthesizerTrnMs256NSFsid_sim(nn.Module):
         self.enc_p = TextEncoder256Sim(inter_channels, hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout)
         self.dec = GeneratorNSF(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels,is_half=kwargs["is_half"])
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 3, gin_channels=gin_channels)
-        self.spk_embed_dim=spk_embed_dim
-        self.emb_g = nn.Embedding(self.spk_embed_dim, gin_channels)
+        self.emb_g = nn.Embedding(spk_embed_dim, gin_channels)
+        # Remnants
+        self.spk_embed_dim = spk_embed_dim
 
     def remove_weight_norm(self):
         self.dec.remove_weight_norm()

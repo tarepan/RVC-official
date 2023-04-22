@@ -58,10 +58,9 @@ def run(rank, n_gpus, hps):
     if torch.cuda.is_available():
         torch.cuda.set_device(rank)
 
-    if hps.if_f0 == 1:
-        train_dataset = TextAudioLoaderMultiNSFsid(hps.data.training_files, hps.data)
-    else:
-        train_dataset =            TextAudioLoader(hps.data.training_files, hps.data)
+    # Data
+    DatasetCls = TextAudioLoaderMultiNSFsid if hps.if_f0 == 1 else TextAudioLoader
+    train_dataset = DatasetCls(hps.data.training_files, hps.data)
     train_sampler = DistributedBucketSampler(
         train_dataset,
         hps.train.batch_size * n_gpus,
@@ -73,16 +72,12 @@ def run(rank, n_gpus, hps):
     )
     # It is possible that dataloader's workers are out of shared memory. Please try to raise your shared memory limit.
     # num_workers=8 -> num_workers=4
-    if hps.if_f0 == 1:
-        collate_fn = TextAudioCollateMultiNSFsid()
-    else:
-        collate_fn = TextAudioCollate()
     train_loader = DataLoader(
         train_dataset,
         num_workers=4,
         shuffle=False,
         pin_memory=True,
-        collate_fn=collate_fn,
+        collate_fn = TextAudioCollateMultiNSFsid() if hps.if_f0 == 1 else TextAudioCollate(),
         batch_sampler=train_sampler,
         persistent_workers=True,
         prefetch_factor=8,

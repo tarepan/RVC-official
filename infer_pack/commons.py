@@ -124,14 +124,24 @@ def shift_1d(x):
 
 
 def sequence_mask(length, max_length: int = None):
-    """
+    """Generate tail-padding mask.
+
+    Args:
+        length :: (B,) - Effective length of each series in a batch
+    Returns:
+        :: (B, Frame) - Tail-padding mask
     """
     if max_length is None:
-        max_length = length.max()
-    # x :: (1, L) = [[0, 1, ..., max_length-1]]
+        max_length: int = length.max()
+    # [[0, 1, ..., max_length-1]] < [[L_0], [L_1], ..., [L_N]]
     x = torch.arange(max_length, dtype=length.dtype, device=length.device)
     return x.unsqueeze(0) < length.unsqueeze(1)
 
+# e.g.
+# print(sequence_mask(torch.tensor([3, 5, 4,])))
+# tensor([[ True,  True,  True, False, False],
+#         [ True,  True,  True,  True,  True],
+#         [ True,  True,  True,  True, False]])
 
 def generate_path(duration, mask):
     """

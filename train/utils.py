@@ -271,6 +271,7 @@ def load_wav_to_torch(full_path):
 
 
 def load_filepaths_and_text(filename, split="|"):
+    """Load data list."""
     with open(filename, encoding="utf-8") as f:
         filepaths_and_text = [line.strip().split(split) for line in f]
     return filepaths_and_text
@@ -375,7 +376,8 @@ def get_hparams(init=True):
     hparams.if_f0 = args.if_f0
     hparams.if_latest = args.if_latest
     hparams.if_cache_data_in_gpu = args.if_cache_data_in_gpu
-    hparams.data.training_files = "%s/filelist.txt" % experiment_dir
+    # Path to the data list file
+    hparams.data.training_files = f"{experiment_dir}/filelist.txt"
     return hparams
 
 
