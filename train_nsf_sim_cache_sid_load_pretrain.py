@@ -1,18 +1,8 @@
-import sys, os
-
-now_dir = os.getcwd()
-sys.path.append(os.path.join(now_dir, "train"))
-import utils
-
-hps = utils.get_hparams()
-os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
-n_gpus = len(hps.gpus.split("-"))
+import sys, os, traceback
+from time import sleep
 from random import shuffle
-import traceback, json, argparse, itertools, math, torch, pdb
 
-torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.benchmark = False
-from torch import nn, optim
+import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -20,31 +10,35 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp import autocast, GradScaler
+
+sys.path.append(os.path.join(os.getcwd(), "train"))
+
+import utils
 from infer_pack import commons
-from time import sleep
-from time import time as ttime
-from data_utils import (
-    TextAudioLoaderMultiNSFsid,
-    TextAudioLoader,
-    TextAudioCollateMultiNSFsid,
-    TextAudioCollate,
-    DistributedBucketSampler,
-)
 from infer_pack.models import SynthesizerTrnMs256NSFsid, SynthesizerTrnMs256NSFsid_nono, MultiPeriodDiscriminator
+from data_utils import TextAudioLoaderMultiNSFsid, TextAudioLoader, TextAudioCollateMultiNSFsid, TextAudioCollate, DistributedBucketSampler
 from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 
 
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = False
+
+hps = utils.get_hparams()
+os.environ["CUDA_VISIBLE_DEVICES"] = hps.gpus.replace("-", ",")
+n_gpus = len(hps.gpus.split("-"))
 global_step = 0
 
 
 def main():
+    """⚡"""
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "51515"
     mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps))
 
 
 def run(rank, n_gpus, hps):
+    # ⚡
     global global_step
     if rank == 0:
         logger = utils.get_logger(hps.model_dir)
@@ -52,7 +46,6 @@ def run(rank, n_gpus, hps):
         utils.check_git_hash(hps.model_dir)
         writer = SummaryWriter(log_dir=hps.model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
-
     dist.init_process_group(backend="gloo", init_method="env://", world_size=n_gpus, rank=rank)
     torch.manual_seed(hps.train.seed)
     if torch.cuda.is_available():
@@ -127,7 +120,10 @@ def run(rank, n_gpus, hps):
     # fp16
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
+    # Data cache
     cache = []
+
+    # Run - Run train and eval for default config epochs
     for epoch in range(epoch_str, hps.train.epochs + 1):
         if rank == 0:
             train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, None], logger, [writer, writer_eval], cache)
@@ -438,18 +434,13 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     if rank == 0:
         logger.info("====> Epoch: {}".format(epoch))
+
+    # Exit based on "--total_epoch" argument
     if epoch >= hps.total_epoch and rank == 0:
         logger.info("Training is done. The program is closed.")
-        from process_ckpt import savee  # def savee(ckpt,sr,if_f0,name,epoch):
-
-        if hasattr(net_g, "module"):
-            ckpt = net_g.module.state_dict()
-        else:
-            ckpt = net_g.state_dict()
-        logger.info(
-            "saving final ckpt:%s"
-            % (savee(ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch))
-        )
+        from process_ckpt import savee
+        ckpt = net_g.module.state_dict() if hasattr(net_g, "module") else net_g.state_dict()
+        logger.info("saving final ckpt:%s" % (savee(ckpt, hps.sample_rate, hps.if_f0, hps.name, epoch)))
         sleep(1)
         os._exit(2333333)
 

@@ -163,36 +163,37 @@ class PosteriorEncoder(nn.Module):
         kernel_size:     int,     # WaveNet kernel size
         dilation_rate:   int,     # WaveNet dilation factor
         n_layers:        int,     # WaveNet the number of layers
-        gin_channels:    int = 0, # 
+        gin_channels:    int = 0, # Feature dimension size of global conditioning vector
     ):
         super().__init__()
         self.out_channels = out_channels
-        self.in_channels, self.hidden_channels, self.kernel_size, self.dilation_rate, self.n_layers, self.gin_channels = in_channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels
         self.pre  = nn.Conv1d(in_channels,     hidden_channels,  1)
         self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+        # Remnants
+        self.in_channels, self.hidden_channels, self.kernel_size, self.dilation_rate, self.n_layers, self.gin_channels = in_channels, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels
 
     def forward(self, x, x_lengths, g=None):
         """
         Args:
-            x         :: maybe (B, Feat=i, Frame) - Observed variable series to be encoded
-            x_lengths                             - (maybe) effective length during training
-            g         ::       ()                 - Time-invariant global conditioning vector
+            x         :: (B, Feat=i, Frame) - Observed variable series to be encoded
+            x_lengths :: (B,)               - Effective length of each series in `x`
+            g         :: (B, Feat,   T=1)   - Time-invariant global conditioning vector
         Returns:
             z         :: maybe (B, Feat=o, Frame) - Latent varible series
             mu        :: maybe (B, Feat=o, Frame) - μ      of conditional normal distribution q(z|x) = N(μ,σ|x)
             log_sigma :: maybe (B, Feat=o, Frame) - log(σ) of conditional normal distribution q(z|x) = N(μ,σ|x)
-            x_mask    ::       (1,      1, Frame) - Mask
+            x_mask    ::       (B, Feat=1, Frame) - Tail-padding mask
         """
         ## Tail-padding mask :: (B,) -> (B, Frame) -> (B, Feat=1, Frame)
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+        x_mask = commons.sequence_mask(x_lengths, x.size(2)).unsqueeze(1).to(x.dtype)
 
         # Transform :: (B, Feat=i, Frame) -> (B, Feat=h, Frame) -> ? -> (B, Feat=2*o, Frame?)
         x = self.pre(x) * x_mask
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
 
-        # Normal distribution :: (B, Feat=2*o, Frame?) -> 2x (B, Feat=o, Frame?) -> (B, Feat=o, Frame?) - reparametrization trick
+        # Normal distribution :: (B, Feat=2*o, Frame?) -> 2x (B, Feat=o, Frame?) -> (B, Feat=o, Frame?) - Reparametrization trick
         mu, log_sigma = torch.split(stats, self.out_channels, dim=1)
         z = (mu + torch.randn_like(mu) * torch.exp(log_sigma)) * x_mask
         return z, mu, log_sigma, x_mask
@@ -507,7 +508,7 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
     """Main model w/ fo"""
     def __init__(
         self,
-        spec_channels,
+        spec_channels: int, # Frequency dimension size of spectrogram
         segment_size,
         inter_channels, hidden_channels,
         filter_channels, n_heads, n_layers, kernel_size: int, p_dropout,
@@ -550,13 +551,13 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
     def forward(self, phone, phone_lengths, pitch, pitchf, y, y_lengths, ds):
         """
         Args:
-            phone         :: (B, Frame, Feat) - Unit series
-            phone_lengths :: (B,)             - Effective length of each series in phone
-            pitch         :: (B, Frame)       - Coarse fo series
-            pitchf        :: (B, Frame)       - Fine   fo series
-            y             :: ()               - Observed variable series (e.g. Linear spectrogram)
-            y_lengths
-            ds            :: (B, 1)           - Speaker index
+            phone         :: (B, Frame, Feat)  - Unit series
+            phone_lengths :: (B,)              - Effective length of each series in phone
+            pitch         :: (B, Frame)        - Coarse fo contour
+            pitchf        :: (B, Frame)        - Fine   fo contour
+            y             :: (B, Feat,  Frame) - Observed variable series (e.g. Linear spectrogram)
+            y_lengths     :: (B,)              - Effective length of each series in y
+            ds            :: (B,)              - Speaker index
         """
         """
         ds -------> [emb_g] -> g -------.-------------------.-----.
@@ -566,11 +567,11 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
                                                      '-> μ_q/σ_q  |
         pitchf ---------------------------------------------------'
         """
-        # Speaker embedding :: (B, 1) -> (B, Feat, T=1)
+        # Speaker embedding :: (B,) -> (B, Feat) -> (B, Feat, T=1)
         g = self.emb_g(ds).unsqueeze(-1)
         # Unit encoder :: (B, Frame, Feat) & (B, Frame) -> (B, Feat, Frame)
-        m_p, logs_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
-        # Posterior encoder :: () -> ()
+        mu_p, log_sigma_p, x_mask = self.enc_p(phone, pitch, phone_lengths)
+        # Posterior encoder :: (B, Feat, Frame) -> (B, Feat, Frame)
         z, mu_q, log_sigma_q, y_mask = self.enc_q(y, y_lengths, g)
         z_p = self.flow(z, y_mask, g=g)
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
@@ -578,7 +579,7 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         # Decoder :: () & () & (B, Feat, T=1) -> ()
         o = self.dec(z_slice, pitchf, g=g)
 
-        return o, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, mu_q, log_sigma_q)
+        return o, ids_slice, x_mask, y_mask, (z, z_p, mu_p, log_sigma_p, mu_q, log_sigma_q)
 
     def infer(self, phone, phone_lengths, pitch, nsff0, sid, max_len=None):
         """

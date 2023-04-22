@@ -1,10 +1,11 @@
-import os, traceback
+import os
 import glob
 import sys
 import argparse
 import logging
 import json
 import subprocess
+
 import numpy as np
 from scipy.io.wavfile import read
 import torch
@@ -13,54 +14,6 @@ MATPLOTLIB_FLAG = False
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging
-
-
-def load_checkpoint_d(checkpoint_path, combd, sbd, optimizer=None, load_opt=1):
-    assert os.path.isfile(checkpoint_path)
-    checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
-
-    ##################
-    def go(model, bkey):
-        saved_state_dict = checkpoint_dict[bkey]
-        if hasattr(model, "module"):
-            state_dict = model.module.state_dict()
-        else:
-            state_dict = model.state_dict()
-        new_state_dict = {}
-        for k, v in state_dict.items():  # 模型需要的shape
-            try:
-                new_state_dict[k] = saved_state_dict[k]
-                if saved_state_dict[k].shape != state_dict[k].shape:
-                    print(
-                        "shape-%s-mismatch|need-%s|get-%s"
-                        % (k, state_dict[k].shape, saved_state_dict[k].shape)
-                    )  #
-                    raise KeyError
-            except:
-                # logger.info(traceback.format_exc())
-                logger.info("%s is not in the checkpoint" % k)  # pretrain缺失的
-                new_state_dict[k] = v  # 模型自带的随机值
-        if hasattr(model, "module"):
-            model.module.load_state_dict(new_state_dict, strict=False)
-        else:
-            model.load_state_dict(new_state_dict, strict=False)
-
-    go(combd, "combd")
-    go(sbd, "sbd")
-    #############
-    logger.info("Loaded model weights")
-
-    iteration = checkpoint_dict["iteration"]
-    learning_rate = checkpoint_dict["learning_rate"]
-    if (
-        optimizer is not None and load_opt == 1
-    ):  ###加载不了，如果是空的的话，重新初始化，可能还会影响lr时间表的更新，因此在train文件最外围catch
-        #   try:
-        optimizer.load_state_dict(checkpoint_dict["optimizer"])
-    #   except:
-    #     traceback.print_exc()
-    logger.info("Loaded checkpoint '{}' (epoch {})".format(checkpoint_path, iteration))
-    return model, optimizer, learning_rate, iteration
 
 
 # def load_checkpoint(checkpoint_path, model, optimizer=None):
@@ -155,32 +108,6 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
     )
 
 
-def save_checkpoint_d(combd, sbd, optimizer, learning_rate, iteration, checkpoint_path):
-    logger.info(
-        "Saving model and optimizer state at epoch {} to {}".format(
-            iteration, checkpoint_path
-        )
-    )
-    if hasattr(combd, "module"):
-        state_dict_combd = combd.module.state_dict()
-    else:
-        state_dict_combd = combd.state_dict()
-    if hasattr(sbd, "module"):
-        state_dict_sbd = sbd.module.state_dict()
-    else:
-        state_dict_sbd = sbd.state_dict()
-    torch.save(
-        {
-            "combd": state_dict_combd,
-            "sbd": state_dict_sbd,
-            "iteration": iteration,
-            "optimizer": optimizer.state_dict(),
-            "learning_rate": learning_rate,
-        },
-        checkpoint_path,
-    )
-
-
 def summarize(
     writer,
     global_step,
@@ -234,37 +161,6 @@ def plot_spectrogram_to_numpy(spectrogram):
     return data
 
 
-def plot_alignment_to_numpy(alignment, info=None):
-    global MATPLOTLIB_FLAG
-    if not MATPLOTLIB_FLAG:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        MATPLOTLIB_FLAG = True
-        mpl_logger = logging.getLogger("matplotlib")
-        mpl_logger.setLevel(logging.WARNING)
-    import matplotlib.pylab as plt
-    import numpy as np
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    im = ax.imshow(
-        alignment.transpose(), aspect="auto", origin="lower", interpolation="none"
-    )
-    fig.colorbar(im, ax=ax)
-    xlabel = "Decoder timestep"
-    if info is not None:
-        xlabel += "\n\n" + info
-    plt.xlabel(xlabel)
-    plt.ylabel("Encoder timestep")
-    plt.tight_layout()
-
-    fig.canvas.draw()
-    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    plt.close()
-    return data
-
-
 def load_wav_to_torch(full_path):
     sampling_rate, data = read(full_path)
     return torch.FloatTensor(data.astype(np.float32)), sampling_rate
@@ -294,64 +190,78 @@ def get_hparams(init=True):
         自动决定training_files路径,改掉train_nsf_load_pretrain.py里的hps.data.training_files    done
       -c不要了
     """
+    # Load arguments
+    # NOTE: important for base training: `total_epoch` / `batch_size` / `if_f0`
     parser = argparse.ArgumentParser()
-    # parser.add_argument('-c', '--config', type=str, default="configs/40k.json",help='JSON file for configuration')
-    parser.add_argument(
-        "-se",
-        "--save_every_epoch",
-        type=int,
-        required=True,
-        help="checkpoint save frequency (epoch)",
-    )
-    parser.add_argument(
-        "-te", "--total_epoch", type=int, required=True, help="total_epoch"
-    )
-    parser.add_argument(
-        "-pg", "--pretrainG", type=str, default="", help="Pretrained Discriminator path"
-    )
-    parser.add_argument(
-        "-pd", "--pretrainD", type=str, default="", help="Pretrained Generator path"
-    )
-    parser.add_argument("-g", "--gpus", type=str, default="0", help="split by -")
-    parser.add_argument(
-        "-bs", "--batch_size", type=int, required=True, help="batch size"
-    )
-    parser.add_argument(
-        "-e", "--experiment_dir", type=str, required=True, help="experiment dir"
-    )  # -m
-    parser.add_argument(
-        "-sr", "--sample_rate", type=str, required=True, help="sample rate, 32k/40k/48k"
-    )
-    parser.add_argument(
-        "-f0",
-        "--if_f0",
-        type=int,
-        required=True,
-        help="use f0 as one of the inputs of the model, 1 or 0",
-    )
-    parser.add_argument(
-        "-l",
-        "--if_latest",
-        type=int,
-        required=True,
-        help="if only save the latest G/D pth file, 1 or 0",
-    )
-    parser.add_argument(
-        "-c",
-        "--if_cache_data_in_gpu",
-        type=int,
-        required=True,
-        help="if caching the dataset in GPU memory, 1 or 0",
-    )
-
+    parser.add_argument("-se", "--save_every_epoch",     type=int, required=True,              help="checkpoint save frequency (epoch)")
+    parser.add_argument("-te", "--total_epoch",          type=int, required=True,              help="total_epoch")
+    parser.add_argument("-pg", "--pretrainG",            type=str,                default="",  help="Pretrained Discriminator path")
+    parser.add_argument("-pd", "--pretrainD",            type=str,                default="",  help="Pretrained Generator path")
+    parser.add_argument("-g",  "--gpus",                 type=str,                default="0", help="split by -")
+    parser.add_argument("-bs", "--batch_size",           type=int, required=True,              help="batch size")
+    parser.add_argument("-e",  "--experiment_dir",       type=str, required=True,              help="experiment dir")
+    parser.add_argument("-sr", "--sample_rate",          type=str, required=True,              help="sample rate, 32k/40k/48k")
+    parser.add_argument("-f0", "--if_f0",                type=int, required=True,              help="use f0 as one of the inputs of the model, 1 or 0")
+    parser.add_argument("-l",  "--if_latest",            type=int, required=True,              help="if only save the latest G/D pth file, 1 or 0")
+    parser.add_argument("-c",  "--if_cache_data_in_gpu", type=int, required=True,              help="if caching the dataset in GPU memory, 1 or 0")
     args = parser.parse_args()
-    name = args.experiment_dir
-    experiment_dir = os.path.join("./logs", args.experiment_dir)
 
+    # Prepare directories
+    experiment_dir = os.path.join("./logs", args.experiment_dir)
     if not os.path.exists(experiment_dir):
         os.makedirs(experiment_dir)
 
-    config_path = "configs/%s.json" % args.sample_rate
+    # Load and Save config file
+    """
+    Configs
+    {
+        "train": {
+            "log_interval": 200,
+            "seed": 1234,
+            "epochs": 20000,
+            "learning_rate": 1e-4,
+            "betas": [0.8, 0.99],
+            "eps": 1e-9,
+            "batch_size": 4,
+            "fp16_run": true,
+            "lr_decay": 0.999875,
+            "segment_size": 12800,
+            "init_lr_ratio": 1,
+            "warmup_epochs": 0,
+            "c_mel": 45,
+            "c_kl": 1.0
+        },
+        "data": {
+            "max_wav_value": 32768.0,
+            "sampling_rate": 32000,   - Ground-truth waveform's sampling rate
+            "filter_length": 1024,    - STFT frequency dim size
+            "hop_length": 320,
+            "win_length": 1024,       - STFT window length
+            "n_mel_channels": 80,
+            "mel_fmin": 0.0,
+            "mel_fmax": null
+        },
+        "model": {
+            "inter_channels": 192,
+            "hidden_channels": 192,
+            "filter_channels": 768,
+            "n_heads": 2,
+            "n_layers": 6,
+            "kernel_size": 3,
+            "p_dropout": 0,
+            "resblock": "1",
+            "resblock_kernel_sizes": [3,7,11],
+            "resblock_dilation_sizes": [[1,3,5], [1,3,5], [1,3,5]],
+            "upsample_rates": [10,4,2,2,2],
+            "upsample_initial_channel": 512,
+            "upsample_kernel_sizes": [16,16,4,4,4],
+            "use_spectral_norm": false,
+            "gin_channels": 256,
+            "spk_embed_dim": 109
+        }
+    }
+    """
+    config_path = f"configs/{args.sample_rate}.json"
     config_save_path = os.path.join(experiment_dir, "config.json")
     if init:
         with open(config_path, "r") as f:
@@ -363,41 +273,22 @@ def get_hparams(init=True):
             data = f.read()
     config = json.loads(data)
 
+    # Merge - Merge (or override) config from file with arguments
     hparams = HParams(**config)
     hparams.model_dir = hparams.experiment_dir = experiment_dir
-    hparams.save_every_epoch = args.save_every_epoch
-    hparams.name = name
-    hparams.total_epoch = args.total_epoch
-    hparams.pretrainG = args.pretrainG
-    hparams.pretrainD = args.pretrainD
-    hparams.gpus = args.gpus
-    hparams.train.batch_size = args.batch_size
-    hparams.sample_rate = args.sample_rate
-    hparams.if_f0 = args.if_f0
-    hparams.if_latest = args.if_latest
+    hparams.save_every_epoch     = args.save_every_epoch
+    hparams.name                 = args.experiment_dir
+    hparams.total_epoch          = args.total_epoch
+    hparams.pretrainG            = args.pretrainG
+    hparams.pretrainD            = args.pretrainD
+    hparams.gpus                 = args.gpus
+    hparams.train.batch_size     = args.batch_size # Override
+    hparams.sample_rate          = args.sample_rate
+    hparams.if_f0                = args.if_f0
+    hparams.if_latest            = args.if_latest
     hparams.if_cache_data_in_gpu = args.if_cache_data_in_gpu
     # Path to the data list file
-    hparams.data.training_files = f"{experiment_dir}/filelist.txt"
-    return hparams
-
-
-def get_hparams_from_dir(model_dir):
-    config_save_path = os.path.join(model_dir, "config.json")
-    with open(config_save_path, "r") as f:
-        data = f.read()
-    config = json.loads(data)
-
-    hparams = HParams(**config)
-    hparams.model_dir = model_dir
-    return hparams
-
-
-def get_hparams_from_file(config_path):
-    with open(config_path, "r") as f:
-        data = f.read()
-    config = json.loads(data)
-
-    hparams = HParams(**config)
+    hparams.data.training_files  = f"{experiment_dir}/filelist.txt"
     return hparams
 
 

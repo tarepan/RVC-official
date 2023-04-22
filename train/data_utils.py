@@ -24,8 +24,8 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         self.filter_length, self.win_length = hparams.filter_length, hparams.win_length
         # Filtering - audiopaths_and_text == [audiopath, text, pitch, pitchf, dv][]
         self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
-        self.min_text_len = getattr(hparams, "min_text_len", 1)
-        self.max_text_len = getattr(hparams, "max_text_len", 5000)
+        self.min_text_len = getattr(hparams, "min_text_len",    1) # Minumum frame length (seems to be default value)
+        self.max_text_len = getattr(hparams, "max_text_len", 5000) # Maximum frame length (seems to be default value)
         self._filter()
 
     def _filter(self):
@@ -35,10 +35,10 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         # spec_length = wav_length // hop_length
         audiopaths_and_text_new = []
         lengths = []
-        for audiopath, text, pitch, pitchf, dv in self.audiopaths_and_text:
-            if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
-                # Preserve only `min_text_len <= len(text) <= max_text_len`
-                audiopaths_and_text_new.append([audiopath, text, pitch, pitchf, dv])
+        for audiopath, unit, pitch, pitchf, dv in self.audiopaths_and_text:
+            # Use data which satisfy `min_text_len <= len(unit) <= max_text_len`
+            if self.min_text_len <= len(unit) and len(unit) <= self.max_text_len:
+                audiopaths_and_text_new.append([audiopath, unit, pitch, pitchf, dv])
                 lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
         self.audiopaths_and_text = audiopaths_and_text_new
         self.lengths = lengths
@@ -54,7 +54,7 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         Args:
             audiopath_and_text - [audiopath, text, pitch, pitchf, dv]
         Returns:
-            spec   :: (Freq,      Frame=frm)
+            spec   :: (Freq,      Frame=frm) - Linear-frequency Linear-amplitude spectrogram
             wav    :: (Feat=1,    T=frm*hop) - Waveform, range in [-1, 1]
             phone  :: (Frame=frm, Feat)      - Unit series
             pitch  :: (Frame=frm,)           - Coarse fo series
@@ -67,7 +67,7 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         # Load/Generation
         # phone :: (Frame=frm, Feat) / pitch :: (Frame=frm) / pitchf :: (Frame=frm)
         phone, pitch, pitchf = self.get_labels(phone, pitch, pitchf)
-        # spec :: / wav :: (1, T=t)
+        # spec :: (Freq, Frame=frm) / wav :: (1, T=t)
         spec, wav = self.get_audio(file)
         dv = self.get_sid(dv)
 
@@ -112,8 +112,8 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         """Get audio and spectrogram.
 
         Returns:
-            spec       :: ()          - Spectrogram
-            audio_norm :: (Feat=1, T) - Waveform, in range [-1, 1]
+            spec       :: (Freq,   Frame) - Linear-frequency Linear-amplitude spectrogram
+            audio_norm :: (Feat=1, T)     - Waveform, in range [-1, 1]
         """
         # Load :: (T,)
         audio, sampling_rate = load_wav_to_torch(filename)
@@ -137,8 +137,8 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
                 spec_loaded = False
                 print(spec_filename, traceback.format_exc())
         if (not spec_file_exist) or (not spec_loaded):
-            spec = spectrogram_torch(audio_norm, self.filter_length, self.sampling_rate, self.hop_length, self.win_length, center=False)
-            spec = torch.squeeze(spec, 0)
+            # spec :: (B=1, T) -> (B=1, Freq, Frame) -> (Freq, Frame)
+            spec = spectrogram_torch(audio_norm, self.filter_length, self.sampling_rate, self.hop_length, self.win_length, center=False).squeeze(0)
             torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
 
         return spec, audio_norm
@@ -161,7 +161,7 @@ class TextAudioCollateMultiNSFsid:
 
         Args:
             batch :: [items]
-                #0 spec   :: (Feat,   Frame) - Spectrogram
+                #0 spec   :: (Feat,   Frame) - Linear-frequency Linear-amplitude spectrogram
                 #1 wave   :: (Feat=1, T)     - Waveform
                 #2 phone  :: (Frame,  Feat)  - Unit series
                 #3 pitch  :: (Frame,)        - Coarse fo contour
@@ -172,7 +172,7 @@ class TextAudioCollateMultiNSFsid:
             phone_lengths :: (B,)               - Effective length of each series in phone_padded
             pitch_padded  :: (B, Frame)         - Tail-padded pitch  contour
             pitchf_padded :: (B, Frame)         - Tail-padded pitchf contour
-            spec_padded   :: (B, Feat,   Frame) - Tail-padded spectrograms
+            spec_padded   :: (B, Feat,   Frame) - Tail-padded Linear-frequency Linear-amplitude spectrogram
             spec_lengths  :: (B,)               - Effective length of each series in spec_padded
             wave_padded   :: (B, Feat=1, T)     - Tail-padded waveforms
             wave_lengths  :: (B,)               - Effective length of each series in wave_padded
