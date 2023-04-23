@@ -232,14 +232,14 @@ def get_hparams(init=True):
             "c_kl": 1.0
         },
         "data": {
-            "max_wav_value": 32768.0,
-            "sampling_rate": 32000,   - Ground-truth waveform's sampling rate
-            "filter_length": 1024,    - STFT frequency dim size
-            "hop_length": 320,
-            "win_length": 1024,       - STFT window length
-            "n_mel_channels": 80,
-            "mel_fmin": 0.0,
-            "mel_fmax": null
+            "max_wav_value":  32768.0,
+            "sampling_rate":  32000,   - Ground-truth waveform's sampling rate
+            "filter_length":   1024,   - STFT frequency dim size
+            "hop_length":       320,
+            "win_length":      1024,   - STFT window length
+            "n_mel_channels":    80,   - Frequency dimension size of mel-spectrogram
+            "mel_fmin":           0.0, - Lowest  frequency in mel-spectrogarm
+            "mel_fmax":        null,   - Highest frequency in mel-spectrogarm
         },
         "model": {
             "inter_channels": 192,
