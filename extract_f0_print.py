@@ -66,7 +66,9 @@ class FeatureInput(object):
             f0 :: (Frame,) - Fine fo contour, 100Hz (10msec/frame)
         """
         # Load
-        x = librosa.load(path, sr=self.fs)[0]
+        # default resample type of librosa.resample is "soxr_hq".
+        # Quality: soxr_vhq > soxr_hq
+        x = librosa.load(path, sr=self.fs)[0] # res_type='soxr_vhq'
 
         # Extraction
         ## Praat

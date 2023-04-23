@@ -100,11 +100,11 @@ class PreProcess:
         # NOTE: Amplitude normalize & preemphasis...?
         # NOTE: Audible difference seems to be very small (loudness is ofcourse changed)
         tmp_audio = (tmp_audio / np.abs(tmp_audio).max() * (self.max * self.alpha)) + (1 - self.alpha) * tmp_audio
-        wavfile.write(f"{self.gt_wavs_dir}/{filename}", self.sr, (tmp_audio * 32768).astype(np.int16))
+        wavfile.write(f"{self.gt_wavs_dir}/{filename}", self.sr, tmp_audio.astype(np.float32))
 
         # Saved as sint16/16kHz
-        tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)
-        wavfile.write(f"{self.wavs16k_dir}/{filename}", 16000,   (tmp_audio * 32768).astype(np.int16))
+        tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)#, res_type="soxr_vhq"
+        wavfile.write(f"{self.wavs16k_dir}/{filename}", 16000,   tmp_audio.astype(np.float32))
 
     def pipeline(self, path_ipt: str, file_idx: int):
         """
@@ -117,7 +117,8 @@ class PreProcess:
             audio = load_audio(path_ipt, self.sr)
 
             # 2. Filtering - Cut below 48Hz
-            audio = signal.filtfilt(self.bh, self.ah, audio)
+            ## zero phased digital filter cause pre-ringing noise...
+            audio = signal.lfilter(self.bh, self.ah, audio)
 
             # 3. Silence clipping :: (T,) -> List[NDArray[(L,)]] - Convert an audio into continuous slices (no silence within a slice)
             slices = self.slicer.slice(audio)
@@ -139,11 +140,10 @@ class PreProcess:
                     else:
                         # Tail
                         chunk = audio_slice[start:]
+                        total_chunk_idx += 1
                         break
                 # Preprocess - Tail
                 self.norm_write(chunk, file_idx, total_chunk_idx)
-                # NOTE: maybe this is needed, but not exist. Seems to be a bug.
-                # total_chunk_idx += 1
             println(f"{path_ipt}->Suc.")
 
         except:
