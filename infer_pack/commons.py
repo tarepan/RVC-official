@@ -21,32 +21,20 @@ def convert_pad_shape(pad_shape):
     return pad_shape
 
 
-def kl_divergence(m_p, logs_p, m_q, logs_q):
-    """KL(P||Q)"""
-    kl = (logs_q - logs_p) - 0.5
-    kl += (
-        0.5 * (torch.exp(2.0 * logs_p) + ((m_p - m_q) ** 2)) * torch.exp(-2.0 * logs_q)
-    )
-    return kl
-
-
-def rand_gumbel(shape):
-    """Sample from the Gumbel distribution, protect from overflows."""
-    uniform_samples = torch.rand(shape) * 0.99998 + 0.00001
-    return -torch.log(-torch.log(uniform_samples))
-
-
-def rand_gumbel_like(x):
-    g = rand_gumbel(x.size()).to(dtype=x.dtype, device=x.device)
-    return g
-
-
 def slice_segments(x, ids_str, segment_size=4):
+    """
+    Args:
+        x
+        ids_str      - Start frame indices
+        segment_size - Slice length
+    """
+    # ret :: (B, Feat, Frame=seg)
     ret = torch.zeros_like(x[:, :, :segment_size])
+    # each series in a batch
     for i in range(x.size(0)):
         idx_str = ids_str[i]
         idx_end = idx_str + segment_size
-        ret[i] = x[i, :, idx_str:idx_end]
+        ret[i] = x[i, :, idx_str : idx_end]
     return ret
 
 
@@ -60,12 +48,24 @@ def slice_segments2(x, ids_str, segment_size=4):
 
 
 def rand_slice_segments(x, x_lengths=None, segment_size=4):
-    b, d, t = x.size()
+    """
+    Args:
+        x            :: (B, Feat, Frame) - Target series
+        x_lengths    :: (B,)             - Effective length of each series in x
+        segment_size 
+    Returns:
+        ret                              - Slice
+        ids_str      :: (B,)             - Start frame indices of each series
+    """
+    b, _, t = x.size()
     if x_lengths is None:
         x_lengths = t
     ids_str_max = x_lengths - segment_size + 1
+    # ids_str :: (B,) - [0, 1] -> [0, ids_str_max] -> round -> Z ∈ [0, ids_str_max]
     ids_str = (torch.rand([b]).to(device=x.device) * ids_str_max).to(dtype=torch.long)
+
     ret = slice_segments(x, ids_str, segment_size)
+
     return ret, ids_str
 
 

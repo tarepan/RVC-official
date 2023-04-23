@@ -574,9 +574,9 @@ class SynthesizerTrnMs256NSFsid(nn.Module):
         # Posterior encoder :: (B, Feat, Frame) -> (B, Feat, Frame)
         z, mu_q, log_sigma_q, y_mask = self.enc_q(y, y_lengths, g)
         z_p = self.flow(z, y_mask, g=g)
+        # Decoder :: (B, Feat, Frame=seg) & () & (B, Feat, T=1) -> ()
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
         pitchf = commons.slice_segments2(pitchf, ids_slice, self.segment_size)
-        # Decoder :: () & () & (B, Feat, T=1) -> ()
         o = self.dec(z_slice, pitchf, g=g)
 
         return o, ids_slice, x_mask, y_mask, (z, z_p, mu_p, log_sigma_p, mu_q, log_sigma_q)

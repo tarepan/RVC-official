@@ -172,7 +172,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 if hps.if_f0 == 1:
                     cache.append((batch_idx, (phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid)))
                 else:
-                    cache.append((batch_idx, (phone, phone_lengths, spec, spec_lengths, wave, wave_lengths, sid,)))
+                    cache.append((batch_idx, (phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid,)))
         else:
             # Load shuffled cache
             shuffle(cache)
@@ -196,10 +196,31 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         # Calculate
         with autocast(enabled=hps.train.fp16_run):
+        ## G/Forward - feature to waveform and z
             if hps.if_f0 == 1:
-                y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
+                y_hat, ids_slice, _, z_mask, (_, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths, pitch, pitchf, spec, spec_lengths, sid)
             else:
-                y_hat, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
+                y_hat, ids_slice, _, z_mask, (_, z_p, m_p, logs_p, _, logs_q) = net_g(phone, phone_lengths,                spec, spec_lengths, sid)
+        ## D/Forward - G is detached
+            wave = commons.slice_segments(wave, ids_slice * hps.data.hop_length, hps.train.segment_size)
+            y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
+        ## D/Loss - adversarial loss
+            with autocast(enabled=False):
+                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
+        ## D/Backward
+        optim_d.zero_grad()
+        scaler.scale(loss_disc).backward()
+        scaler.unscale_(optim_d)
+        ## D/GradientClipping
+        grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
+        ## D/Optim
+        scaler.step(optim_d)
+
+        ## G/Loss - adversarial (updated D) + feature matching + KL + melspec
+        with autocast(enabled=hps.train.fp16_run):
+            ### Adversarial and Feature-matching with updated D
+            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
+            ### Waveform to melspec
             mel = spec_to_mel_torch(spec, hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate, hps.data.mel_fmin, hps.data.mel_fmax)
             y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
             with autocast(enabled=False):
@@ -207,39 +228,23 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     y_hat.float().squeeze(1),
                     hps.data.filter_length, hps.data.n_mel_channels, hps.data.sampling_rate, hps.data.hop_length, hps.data.win_length, hps.data.mel_fmin, hps.data.mel_fmax,
                 )
-            if hps.train.fp16_run == True:
+            if hps.train.fp16_run:
                 y_hat_mel = y_hat_mel.half()
-            wave = commons.slice_segments(wave, ids_slice * hps.data.hop_length, hps.train.segment_size)
-
-            # Discriminator
-            y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
-
-            # Loss
             with autocast(enabled=False):
-                loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
-
-        optim_d.zero_grad()
-        scaler.scale(loss_disc).backward()
-        scaler.unscale_(optim_d)
-        # Gradient clipping
-        grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
-        scaler.step(optim_d)
-
-        with autocast(enabled=hps.train.fp16_run):
-            # D
-            y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
-            with autocast(enabled=False):
-                loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
-                loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-                loss_fm = feature_loss(fmap_r, fmap_g)
+                loss_mel = F.l1_loss(y_mel, y_hat_mel)
+                loss_kl  = kl_loss(z_p, logs_q, m_p, logs_p, z_mask)
+                loss_fm  = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl
+                loss_gen_all = loss_gen + loss_fm + hps.train.c_mel * loss_mel + hps.train.c_kl * loss_kl
+        ## G/Backward
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
-        # Gradient clipping
+        ## G/GradientClipping
         grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
+        ## G/Optim
         scaler.step(optim_g)
+
         scaler.update()
 
         if rank == 0:
