@@ -133,6 +133,10 @@ def run(rank, n_gpus, hps):
         scheduler_d.step()
 
 
+def load_cuda(items, rank):
+    return [item.cuda(rank, non_blocking=True) for item in items]
+
+
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, cache):
     """Run a epoch"""
     net_g, net_d = nets
@@ -161,16 +165,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid = info
                 # Load on CUDA
                 if torch.cuda.is_available():
-                    phone         = phone.cuda(        rank, non_blocking=True)
-                    phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
+                    phone, phone_lengths, sid, spec, spec_lengths, wave, wave_lengths = load_cuda([phone, phone_lengths, sid, spec, spec_lengths, wave, wave_lengths], rank)
                     if hps.if_f0 == 1:
-                        pitch     = pitch.cuda(        rank, non_blocking=True)
-                        pitchf    = pitchf.cuda(       rank, non_blocking=True)
-                    sid           = sid.cuda(          rank, non_blocking=True)
-                    spec          = spec.cuda(         rank, non_blocking=True)
-                    spec_lengths  = spec_lengths.cuda( rank, non_blocking=True)
-                    wave          = wave.cuda(         rank, non_blocking=True)
-                    wave_lengths  = wave_lengths.cuda( rank, non_blocking=True)
+                        pitch, pitchf = load_cuda([pitch, pitchf], rank)
                 # Cache on list
                 if hps.if_f0 == 1:
                     cache.append((batch_idx, (phone, phone_lengths, pitch, pitchf, spec, spec_lengths, wave, wave_lengths, sid)))
@@ -193,16 +190,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             phone, phone_lengths,                spec, spec_lengths, wave, wave_lengths, sid = info
         ## Load on CUDA
         if (hps.if_cache_data_in_gpu == False) and torch.cuda.is_available():
-            phone         = phone.cuda(        rank, non_blocking=True)
-            phone_lengths = phone_lengths.cuda(rank, non_blocking=True)
+            phone, phone_lengths, sid, spec, spec_lengths, wave, wave_lengths = load_cuda([phone, phone_lengths, sid, spec, spec_lengths, wave, wave_lengths], rank)
             if hps.if_f0 == 1:
-                pitch     = pitch.cuda(        rank, non_blocking=True)
-                pitchf    = pitchf.cuda(       rank, non_blocking=True)
-            sid           = sid.cuda(          rank, non_blocking=True)
-            spec          = spec.cuda(         rank, non_blocking=True)
-            spec_lengths  = spec_lengths.cuda( rank, non_blocking=True)
-            wave          = wave.cuda(         rank, non_blocking=True)
-            wave_lengths  = wave_lengths.cuda( rank, non_blocking=True)
+                pitch, pitchf = load_cuda([pitch, pitchf], rank)
 
         # Calculate
         with autocast(enabled=hps.train.fp16_run):
