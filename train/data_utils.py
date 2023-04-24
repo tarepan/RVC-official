@@ -139,7 +139,7 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
                 spec_loaded = False
                 print(spec_filename, traceback.format_exc())
         if (not spec_file_exist) or (not spec_loaded):
-            # spec :: (B=1, T) -> (B=1, Freq, Frame) -> (Freq, Frame)
+            # spec :: (B=1, T) -> (B=1, Freq, Frame) -> (Freq, Frame) - Linear-frequency Linear-amplitude spectrogram
             spec = spectrogram_torch(audio_norm, self.filter_length, self.sampling_rate, self.hop_length, self.win_length, center=False).squeeze(0)
             torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
 

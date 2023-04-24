@@ -10,46 +10,25 @@ import numpy as np
 from scipy.io.wavfile import read
 import torch
 
-MATPLOTLIB_FLAG = False
 
+# ⚡
+MATPLOTLIB_FLAG = False
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging
 
 
-# def load_checkpoint(checkpoint_path, model, optimizer=None):
-#   assert os.path.isfile(checkpoint_path)
-#   checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-#   iteration = checkpoint_dict['iteration']
-#   learning_rate = checkpoint_dict['learning_rate']
-#   if optimizer is not None:
-#     optimizer.load_state_dict(checkpoint_dict['optimizer'])
-#   # print(1111)
-#   saved_state_dict = checkpoint_dict['model']
-#   # print(1111)
-#
-#   if hasattr(model, 'module'):
-#     state_dict = model.module.state_dict()
-#   else:
-#     state_dict = model.state_dict()
-#   new_state_dict= {}
-#   for k, v in state_dict.items():
-#     try:
-#       new_state_dict[k] = saved_state_dict[k]
-#     except:
-#       logger.info("%s is not in the checkpoint" % k)
-#       new_state_dict[k] = v
-#   if hasattr(model, 'module'):
-#     model.module.load_state_dict(new_state_dict)
-#   else:
-#     model.load_state_dict(new_state_dict)
-#   logger.info("Loaded checkpoint '{}' (epoch {})" .format(
-#     checkpoint_path, iteration))
-#   return model, optimizer, learning_rate, iteration
 def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
+    """⚡"""
+    # Validation
     assert os.path.isfile(checkpoint_path)
+
+    # Load
     checkpoint_dict = torch.load(checkpoint_path, map_location="cpu")
 
+    # Restore
+    ## Model
     saved_state_dict = checkpoint_dict["model"]
+    ### Merge restored state and init state
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
     else:
@@ -59,40 +38,48 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
         try:
             new_state_dict[k] = saved_state_dict[k]
             if saved_state_dict[k].shape != state_dict[k].shape:
-                print(
-                    "shape-%s-mismatch|need-%s|get-%s"
-                    % (k, state_dict[k].shape, saved_state_dict[k].shape)
-                )  #
+                print("shape-%s-mismatch|need-%s|get-%s" % (k, state_dict[k].shape, saved_state_dict[k].shape))
                 raise KeyError
         except:
-            # logger.info(traceback.format_exc())
-            logger.info("%s is not in the checkpoint" % k)  # pretrain缺失的
+            logger.info("%s is not in the checkpoint" % k)
             new_state_dict[k] = v  # 模型自带的随机值
+    ### Run restore
     if hasattr(model, "module"):
         model.module.load_state_dict(new_state_dict, strict=False)
     else:
         model.load_state_dict(new_state_dict, strict=False)
     logger.info("Loaded model weights")
-
-    iteration = checkpoint_dict["iteration"]
+    ## Epoch/LR/Optim
+    iteration     = checkpoint_dict["iteration"]
     learning_rate = checkpoint_dict["learning_rate"]
-    if (
-        optimizer is not None and load_opt == 1
-    ):  ###加载不了，如果是空的的话，重新初始化，可能还会影响lr时间表的更新，因此在train文件最外围catch
-        #   try:
+    if optimizer is not None and load_opt == 1:
         optimizer.load_state_dict(checkpoint_dict["optimizer"])
-    #   except:
-    #     traceback.print_exc()
-    logger.info("Loaded checkpoint '{}' (epoch {})".format(checkpoint_path, iteration))
+    logger.info(f"Loaded checkpoint '{checkpoint_path}' (epoch {iteration})")
+
     return model, optimizer, learning_rate, iteration
 
 
 def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path):
-    logger.info(
-        "Saving model and optimizer state at epoch {} to {}".format(
-            iteration, checkpoint_path
-        )
-    )
+    """⚡
+    Outputs:
+        {
+            model                                     - Model state dict
+            iteration                                 - epoch
+            optimizer :: {}
+                state     :: {}                           - current optimization state
+                    N
+                        step                                  - The number of global step
+                        exp_avg
+                        exp_avg_sq
+                param_groups :: [parameter group::{}]     - (show only some attributes)
+                    lr           :: float                     - Current learning rate, modified by scheduler
+                    betas        :: (float, float)
+                    weight_decay :: flaot
+                    initial_lr   :: float                     - Initial learning rate
+            learning_rate :: float                    - initial learning rate (`hps.train.learning_rate`)
+        }
+    """
+    logger.info("Saving model and optimizer state at epoch {} to {}".format(iteration, checkpoint_path))
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
     else:
@@ -104,9 +91,8 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
             "optimizer": optimizer.state_dict(),
             "learning_rate": learning_rate,
         },
-        checkpoint_path,
+        checkpoint_path, # f"{hps.model_dir}/G_{global_step|2333333}.pth"
     )
-
 
 def summarize(
     writer,
@@ -117,6 +103,7 @@ def summarize(
     audios={},
     audio_sampling_rate=22050,
 ):
+    """⚡"""
     for k, v in scalars.items():
         writer.add_scalar(k, v, global_step)
     for k, v in histograms.items():
@@ -128,6 +115,7 @@ def summarize(
 
 
 def latest_checkpoint_path(dir_path, regex="G_*.pth"):
+    """⚡"""
     f_list = glob.glob(os.path.join(dir_path, regex))
     f_list.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
     x = f_list[-1]
@@ -136,6 +124,7 @@ def latest_checkpoint_path(dir_path, regex="G_*.pth"):
 
 
 def plot_spectrogram_to_numpy(spectrogram):
+    """⚡"""
     global MATPLOTLIB_FLAG
     if not MATPLOTLIB_FLAG:
         import matplotlib
@@ -214,32 +203,32 @@ def get_hparams(init=True):
     # Load and Save config file
     """
     Configs
-    {
+    {                                                                                | What's for                                          | compared to VITS
         "train": {
-            "log_interval": 200,
-            "seed": 1234,
-            "epochs": 20000,
-            "learning_rate": 1e-4,
-            "betas": [0.8, 0.99],
-            "eps": 1e-9,
-            "batch_size": 4,
-            "fp16_run": true,
-            "lr_decay": 0.999875,
-            "segment_size": 12800,
-            "init_lr_ratio": 1,
-            "warmup_epochs": 0,
-            "c_mel": 45,
-            "c_kl": 1.0
+            "log_interval": 200,                                                                                                           | -
+            "seed": 1234,                                                                                                                  | same
+            "epochs": 20000,                                                                                                               | x2
+            "learning_rate": 1e-4,                                                                                                         | half
+            "betas": [0.8, 0.99],                                                                                                          | same
+            "eps": 1e-9,                                                                                                                   | same
+            "batch_size": 4,                                                                                                               | 64
+            "fp16_run": true,                                                                                                              | same
+            "lr_decay": 0.999875,                                                                                                          | same
+            "segment_size": 12800,                                                                                                         |
+            "init_lr_ratio": 1,                                                      | Not used for fine-tuning                            | same 
+            "warmup_epochs": 0,                                                      | Not used for fine-tuning                            | same
+            "c_mel": 45,                                                             | loss balance                                        | same
+            "c_kl": 1.0,                                                             | loss balance                                        | same
         },
         "data": {
-            "max_wav_value":  32768.0,
-            "sampling_rate":  32000,   - Ground-truth waveform's sampling rate
-            "filter_length":   1024,   - STFT frequency dim size
-            "hop_length":       320,
-            "win_length":      1024,   - STFT window length
-            "n_mel_channels":    80,   - Frequency dimension size of mel-spectrogram
-            "mel_fmin":           0.0, - Lowest  frequency in mel-spectrogarm
-            "mel_fmax":        null,   - Highest frequency in mel-spectrogarm
+            "max_wav_value":  32768.0, -                                             | Not used now                                        | same
+            "sampling_rate":  32000,   - Ground-truth waveform's sampling rate       | many purposes                                       | <-22050
+            "filter_length":   1024,   - STFT n_fft                                  | mel-loss & linear-spec ipt & model input shape
+            "hop_length":       320,   - Feature hop size [sample/frame]             | mel-loss & linear-spec ipt & others (clipping, segment_size, etc...)
+            "win_length":      1024,   - STFT window length                          | mel-loss & linear-spec ipt
+            "n_mel_channels":    80,   - Frequency dimension size of mel-spectrogram | mel-loss                                            | same
+            "mel_fmin":           0.0, - Lowest  frequency in mel-spectrogarm        | mel-loss                                            | same
+            "mel_fmax":        null,   - Highest frequency in mel-spectrogarm        | mel-loss                                            | same
         },
         "model": {
             "inter_channels": 192,
@@ -248,13 +237,13 @@ def get_hparams(init=True):
             "n_heads": 2,
             "n_layers": 6,
             "kernel_size": 3,
-            "p_dropout": 0,
+            "p_dropout": 0,                                           | <- 0.1
             "resblock": "1",
             "resblock_kernel_sizes": [3,7,11],
             "resblock_dilation_sizes": [[1,3,5], [1,3,5], [1,3,5]],
-            "upsample_rates": [10,4,2,2,2],
+            "upsample_rates": [10,4,2,2,2],                           | <- [8,8,2,2]
             "upsample_initial_channel": 512,
-            "upsample_kernel_sizes": [16,16,4,4,4],
+            "upsample_kernel_sizes": [16,16,4,4,4],                   | <- [16,16,4,4]
             "use_spectral_norm": false,
             "gin_channels": 256,
             "spk_embed_dim": 109
@@ -293,6 +282,7 @@ def get_hparams(init=True):
 
 
 def check_git_hash(model_dir):
+    """⚡"""
     source_dir = os.path.dirname(os.path.realpath(__file__))
     if not os.path.exists(os.path.join(source_dir, ".git")):
         logger.warn(
@@ -318,6 +308,7 @@ def check_git_hash(model_dir):
 
 
 def get_logger(model_dir, filename="train.log"):
+    """⚡"""
     global logger
     logger = logging.getLogger(os.path.basename(model_dir))
     logger.setLevel(logging.DEBUG)
@@ -333,6 +324,7 @@ def get_logger(model_dir, filename="train.log"):
 
 
 class HParams:
+    """⚡"""
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             if type(v) == dict:
