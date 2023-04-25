@@ -256,6 +256,8 @@ def uvr(model_name, inp_root, save_root_vocal, paths, save_root_ins):
 # 一个选项卡全局只能有一个音色
 def get_vc(sid):
     global n_spk, tgt_sr, net_g, vc, cpt
+
+    # Cleaning...?
     if sid == []:
         global hubert_model
         if hubert_model != None:  # 考虑到轮询, 需要加个判断看是否 sid 是由有模型切换到无模型的
@@ -275,6 +277,8 @@ def get_vc(sid):
                 torch.cuda.empty_cache()
             cpt = None
         return {"visible": False, "__type__": "update"}
+
+    # Load checkpoint
     person = "%s/%s" % (weight_root, sid)
     print("loading %s" % person)
     cpt = torch.load(person, map_location="cpu")
@@ -282,21 +286,17 @@ def get_vc(sid):
     cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
     if_f0 = cpt.get("f0", 1)
 
-    # Instantiate the Generator
-    if if_f0 == 1:
-        net_g = SynthesizerTrnMs256NSFsid(*cpt["config"], is_half=is_half)
-    else:
-        net_g = SynthesizerTrnMs256NSFsid_nono(*cpt["config"])
+    # feat-to-wave `net_g`
+    ## Init/Simplification/Restore/Eval/Half
+    net_g = SynthesizerTrnMs256NSFsid(*cpt["config"], is_half=is_half) if if_f0 == 1 else SynthesizerTrnMs256NSFsid_nono(*cpt["config"])
     del net_g.enc_q
-    print(net_g.load_state_dict(cpt["weight"], strict=False))  # 不加这一行清不干净, 真奇葩
+    print(net_g.load_state_dict(cpt["weight"], strict=False))
     net_g.eval().to(device)
-    if is_half:
-        net_g = net_g.half()
-    else:
-        net_g = net_g.float()
+    net_g = net_g.half() if is_half else net_g.float()
 
-    # Initialize system
+    # Runner `vc`
     vc = VC(tgt_sr, device, is_half)
+
     n_spk = cpt["config"][-3]
     return {"visible": True, "maximum": n_spk, "__type__": "update"}
 

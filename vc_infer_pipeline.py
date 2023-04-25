@@ -24,7 +24,8 @@ class VC(object):
         self.is_half   = is_half
 
     def get_f0(self, x, p_len, f0_up_key, f0_method, inp_f0=None):
-        """
+        """Extract coarse/fine fo contours (internal function @2023-04-24).
+
         Args:
             inp_f0
         Returns:
@@ -73,20 +74,22 @@ class VC(object):
 
         return f0_coarse, f0bak
 
-    def vc(self, model, net_g, sid, audio0, pitch, pitchf, times, index, big_npy, index_rate):
-        """Convert voice.
+    def vc(self, model, net_g, sid, audio0, pitch, pitchf, times, index, big_npy, index_rate: float):
+        """Convert voice (internal function @2023-04-24).
 
         Args:
-            model      - Wave-to-Feature model (e.g. HuBERT)
-            net_g      - Feature-to-Wave model
-            sid        - Target speaker's ID
-            audio0     - Source audio waveform
-            pitch      - Converted coarse pitch contour
-            pitchf     - Converted  fine  pitch contour
-            times      - Output of Time to VC
-            index      - (Retrieval related something)
-            big_npy    - (Retrieval related something)
-            index_rate
+            model                           - Wave-to-Feature model (e.g. HuBERT)
+            net_g                           - Feature-to-Wave model
+            sid        ::  Tensor[(B=1, 1)] - Target speaker's ID
+            audio0     :: NDArray[(T,)]     - Source audio waveform
+            pitch                           - Converted coarse pitch contour
+            pitchf                          - Converted  fine  pitch contour
+            times                           - Output of Time to vc
+            index                 | None    - (Retrieval related something)
+            big_npy    :: NDArray | None    - (Retrieval related something)
+            index_rate                      - (Retrieval related something)
+        Returns:
+            audio1     :: NDArray           - Generated waveform, s16
         """
         # Load
         feats = torch.from_numpy(audio0)
@@ -112,13 +115,15 @@ class VC(object):
         with torch.no_grad():
             feats = model.final_proj(model.extract_features(**inputs)[0])
 
-        # Retrieval ...?
-        if (isinstance(index, type(None)) == False) and (isinstance(big_npy, type(None)) == False) and index_rate != 0:
+        # Retrieval - Modify unit if parameters are provided
+        if (index is not None) and (big_npy is not None) and (index_rate != 0):
+            # npy :: (Frame, Feat) - Unit series
             npy = feats[0].cpu().numpy()
             npy = npy.astype("float32") if self.is_half else npy
             _, I = index.search(npy, 1)
             npy = big_npy[I.squeeze()]
             npy = npy.astype("float16") if self.is_half else npy
+            # feats :: (B=1, Frame, Feat) - Mix of retrieved unit and original unit
             feats = torch.from_numpy(npy).unsqueeze(0).to(self.device) * index_rate + (1 - index_rate) * feats
 
         # Upsampling - 50Hz to 100Hz
@@ -154,22 +159,23 @@ class VC(object):
 
         return audio1
 
-    def pipeline(
-        self,
-        model,
-        net_g,
-        sid,
-        audio,
-        times,
-        f0_up_key,
-        f0_method,
-        file_index,
-        file_big_npy,
-        index_rate,
-        if_f0,
-        f0_file=None,
+    def pipeline(self,
+        model,                    #                  - Wave-to-Feat Extractor
+        net_g,                    #                  - Feat-to-Wave Generator
+        sid:          int,        #                  - Target speaker ID
+        audio,                    # :: NDArray[(T,)] - Source audio waveform 
+        times,                    #                  - Output of Time to vc
+        f0_up_key:    int | None, #                  - fo manipulation rate, required if `if_f0 == 1`        
+        f0_method:    str | None, #                  - fo extraction method, required if `if_f0 == 1`
+        file_index:   str,        #                  - Path to faiss `file_index`
+        file_big_npy: str,        #                  - Path to `big_npy`
+        index_rate:   float,      #                  - Retrieval related something
+        if_f0:        int,        # Whether use with-fo model or no-fo model
+        f0_file=None,             # External fo file
     ):
         """Runner function."""
+
+        # Load index/big_npy
         if file_big_npy != "" and file_index != "" and os.path.exists(file_big_npy) and os.path.exists(file_index) and index_rate != 0:
             try:
                 index = faiss.read_index(file_index)
@@ -227,7 +233,7 @@ class VC(object):
         t2 = ttime()
         times[1] += t2 - t1
 
-        # VC - Chunk-wise conversion
+        # Voice conversion - Chunk-wise conversion
         s, t = 0, None
         audio_opt = []
         for t in opt_ts:
@@ -265,3 +271,59 @@ class VC(object):
             torch.cuda.empty_cache()
 
         return audio_opt
+
+def convert_voice(
+    p_wave:    str,
+    p_ckpt_u:  str, # e.g. "hubert_base.pt"
+    p_ckpt_g:  str,
+    spk_id:    int,
+    f0_up_key: int  =   +12,
+    f0_method: str  =  "pm",
+    device:    str  = "cpu",
+    use_half:  bool = True,
+):
+    """
+    Args:
+
+    Returns:
+        o_np   :: NDArray([]) - Converted audio waveform, s16/tgt_sr
+        tgt_sr :: int         - Sampling rate of `o_np` audio waveform
+    """
+    import librosa
+    from fairseq import checkpoint_utils
+
+    from infer_pack.models import SynthesizerTrnMs256NSFsid
+
+    # Load wave :: (T,) - 16kHz in range [-1, 1]
+    wave_np = librosa.load(p_wave, sr=16000, mono=True)[0]
+
+    # Load models
+    ## HuBERT
+    hubert, _, _ = checkpoint_utils.load_model_ensemble_and_task([p_ckpt_u], suffix="")[0][0].to(device)
+    hubert = hubert.half() if use_half else hubert.float()
+    hubert.eval()
+    ## Feat2Wave Generator
+    cpt = torch.load(p_ckpt_g, map_location="cpu")
+    tgt_sr: int = cpt["config"][-1]
+    cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
+    net_g = SynthesizerTrnMs256NSFsid(*cpt["config"], is_half=use_half)
+    del net_g.enc_q
+    print(net_g.load_state_dict(cpt["weight"], strict=False))
+    net_g.eval().to(device)
+    net_g = net_g.half() if use_half else net_g.float()
+
+    # Conversion
+    vc = VC(tgt_sr=tgt_sr, device=device, is_half=use_half)
+    ts = [0, 0, 0]
+    o_np = vc.pipeline(
+        hubert, net_g,
+        sid       = spk_id,
+        audio     = wave_np,
+        time      = ts,
+        if_f0     = 1,
+        f0_up_key = f0_up_key,
+        f0_method = f0_method,
+        file_index="", file_big_npy="", index_rate=0
+    )
+
+    return o_np, tgt_sr

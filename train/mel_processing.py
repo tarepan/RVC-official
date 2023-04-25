@@ -63,7 +63,17 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
     if wnsize_dtype_device not in hann_window:
         hann_window[wnsize_dtype_device] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
 
-    # Padding
+    # Padding :: (B, T)
+    """
+    Center of generated samples
+                  frame#1     frame#2             frame#N
+    x          |...........|...........|... ...|...........|
+          \__________^__________/         \__________^__________/
+                     ↓                               ↓
+    y          |...........|...........|... ...|...........|
+
+    `window/2 - hop/2` results in frame-centering.
+    """
     y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)), mode="reflect")
     y = y.squeeze(1)
 
