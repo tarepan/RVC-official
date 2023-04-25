@@ -58,10 +58,12 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
 
     # Window - Cache if needed
     global hann_window
-    dtype_device        = str(y.dtype)  + "_" + str(y.device)
+    dtype_device = str(y.dtype) + "_" + str(y.device)
     wnsize_dtype_device = str(win_size) + "_" + dtype_device
     if wnsize_dtype_device not in hann_window:
-        hann_window[wnsize_dtype_device] = torch.hann_window(win_size).to(dtype=y.dtype, device=y.device)
+        hann_window[wnsize_dtype_device] = torch.hann_window(win_size).to(
+            dtype=y.dtype, device=y.device
+        )
 
     # Padding :: (B, T)
     """
@@ -74,7 +76,11 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
 
     `window/2 - hop/2` results in frame-centering.
     """
-    y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)), mode="reflect")
+    y = torch.nn.functional.pad(
+        y.unsqueeze(1),
+        (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
+        mode="reflect",
+    )
     y = y.squeeze(1)
 
     # Complex Spectrogram :: (B, T) -> (B, Freq, Frame, RealComplex=2)
@@ -100,11 +106,13 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
 def spec_to_mel_torch(spec, n_fft, num_mels, sampling_rate, fmin, fmax):
     # MelBasis - Cache if needed
     global mel_basis
-    dtype_device      = str(spec.dtype) + "_" + str(spec.device)
-    fmax_dtype_device = str(fmax)       + "_" + dtype_device
+    dtype_device = str(spec.dtype) + "_" + str(spec.device)
+    fmax_dtype_device = str(fmax) + "_" + dtype_device
     if fmax_dtype_device not in mel_basis:
         mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
-        mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(dtype=spec.dtype, device=spec.device)
+        mel_basis[fmax_dtype_device] = torch.from_numpy(mel).to(
+            dtype=spec.dtype, device=spec.device
+        )
 
     # Mel-frequency Log-amplitude spectrogram :: (B, Freq=num_mels, Frame)
     melspec = torch.matmul(mel_basis[fmax_dtype_device], spec)
@@ -113,7 +121,9 @@ def spec_to_mel_torch(spec, n_fft, num_mels, sampling_rate, fmin, fmax):
     return melspec
 
 
-def mel_spectrogram_torch(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
+def mel_spectrogram_torch(
+    y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False
+):
     """Convert waveform into Mel-frequency Log-amplitude spectrogram.
 
     Args:

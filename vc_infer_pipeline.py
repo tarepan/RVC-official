@@ -11,17 +11,18 @@ bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
 
 class VC(object):
     "Inference runner"
+
     def __init__(self, tgt_sr, device, is_half):
-        self.sr        = 16000               # hubert输入采样率
-        self.window    =   160               # 每帧点数 [samples/frame]
-        self.t_pad     = self.sr * x_pad     # 每条前后pad时间
-        self.t_pad_tgt = tgt_sr  * x_pad
-        self.t_pad2    = self.t_pad * 2
-        self.t_query   = self.sr * x_query   # 查询切点前后查询时间
-        self.t_center  = self.sr * x_center  # 查询切点位置
-        self.t_max     = self.sr * x_max     # 免查询时长阈值
-        self.device    = device
-        self.is_half   = is_half
+        self.sr = 16000  # hubert输入采样率
+        self.window = 160  # 每帧点数 [samples/frame]
+        self.t_pad = self.sr * x_pad  # 每条前后pad时间
+        self.t_pad_tgt = tgt_sr * x_pad
+        self.t_pad2 = self.t_pad * 2
+        self.t_query = self.sr * x_query  # 查询切点前后查询时间
+        self.t_center = self.sr * x_center  # 查询切点位置
+        self.t_max = self.sr * x_max  # 免查询时长阈值
+        self.device = device
+        self.is_half = is_half
 
     def get_f0(self, x, p_len, f0_up_key, f0_method, inp_f0=None):
         """Extract coarse/fine fo contours (internal function @2023-04-24).
@@ -42,39 +43,70 @@ class VC(object):
         if f0_method == "pm":
             f0 = (
                 parselmouth.Sound(x, self.sr)
-                .to_pitch_ac(time_step=time_step / 1000, voicing_threshold=0.6, pitch_floor=f0_min, pitch_ceiling=f0_max)
+                .to_pitch_ac(
+                    time_step=time_step / 1000,
+                    voicing_threshold=0.6,
+                    pitch_floor=f0_min,
+                    pitch_ceiling=f0_max,
+                )
                 .selected_array["frequency"]
             )
             pad_size = (p_len - len(f0) + 1) // 2
             if pad_size > 0 or p_len - len(f0) - pad_size > 0:
-                f0 = np.pad(f0, [[pad_size, p_len - len(f0) - pad_size]], mode="constant")
+                f0 = np.pad(
+                    f0, [[pad_size, p_len - len(f0) - pad_size]], mode="constant"
+                )
         elif f0_method == "harvest":
-            f0, t = pyworld.harvest(x.astype(np.double), fs=self.sr, f0_ceil=f0_max, f0_floor=f0_min, frame_period=10)
+            f0, t = pyworld.harvest(
+                x.astype(np.double),
+                fs=self.sr,
+                f0_ceil=f0_max,
+                f0_floor=f0_min,
+                frame_period=10,
+            )
             f0 = pyworld.stonemask(x.astype(np.double), f0, t, self.sr)
             f0 = signal.medfilt(f0, 3)
 
         # Conversion
         f0 *= pow(2, f0_up_key / 12)
 
-        # 
+        #
         tf0 = self.sr // self.window  # 每秒f0点数
         if inp_f0 is not None:
-            delta_t = np.round((inp_f0[:, 0].max() - inp_f0[:, 0].min()) * tf0 + 1).astype("int16")
-            replace_f0 = np.interp(list(range(delta_t)), inp_f0[:, 0] * 100, inp_f0[:, 1])
+            delta_t = np.round(
+                (inp_f0[:, 0].max() - inp_f0[:, 0].min()) * tf0 + 1
+            ).astype("int16")
+            replace_f0 = np.interp(
+                list(range(delta_t)), inp_f0[:, 0] * 100, inp_f0[:, 1]
+            )
             shape = f0[x_pad * tf0 : x_pad * tf0 + len(replace_f0)].shape[0]
             f0[x_pad * tf0 : x_pad * tf0 + len(replace_f0)] = replace_f0[:shape]
         f0bak = f0.copy()
 
         # Coarse fo contour
         f0_mel = 1127 * np.log(1 + f0 / 700)
-        f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - f0_mel_min) * 254 / (f0_mel_max - f0_mel_min) + 1
+        f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - f0_mel_min) * 254 / (
+            f0_mel_max - f0_mel_min
+        ) + 1
         f0_mel[f0_mel <= 1] = 1
         f0_mel[f0_mel > 255] = 255
         f0_coarse = np.rint(f0_mel).astype(np.int)
 
         return f0_coarse, f0bak
 
-    def vc(self, model, net_g, sid, audio0, pitch, pitchf, times, index, big_npy, index_rate: float):
+    def vc(
+        self,
+        model,
+        net_g,
+        sid,
+        audio0,
+        pitch,
+        pitchf,
+        times,
+        index,
+        big_npy,
+        index_rate: float,
+    ):
         """Convert voice (internal function @2023-04-24).
 
         Args:
@@ -124,7 +156,10 @@ class VC(object):
             npy = big_npy[I.squeeze()]
             npy = npy.astype("float16") if self.is_half else npy
             # feats :: (B=1, Frame, Feat) - Mix of retrieved unit and original unit
-            feats = torch.from_numpy(npy).unsqueeze(0).to(self.device) * index_rate + (1 - index_rate) * feats
+            feats = (
+                torch.from_numpy(npy).unsqueeze(0).to(self.device) * index_rate
+                + (1 - index_rate) * feats
+            )
 
         # Upsampling - 50Hz to 100Hz
         feats = F.interpolate(feats.permute(0, 2, 1), scale_factor=2).permute(0, 2, 1)
@@ -136,7 +171,7 @@ class VC(object):
         if feats.shape[1] < p_len:
             p_len = feats.shape[1]
             if pitch != None and pitchf != None:
-                pitch  = pitch[ :, :p_len]
+                pitch = pitch[:, :p_len]
                 pitchf = pitchf[:, :p_len]
         p_len = torch.tensor([p_len], device=self.device).long()
 
@@ -145,7 +180,7 @@ class VC(object):
             if pitch != None and pitchf != None:
                 audio1 = net_g.infer(feats, p_len, pitch, pitchf, sid)[0][0, 0] * 32768
             else:
-                audio1 = net_g.infer(feats, p_len,                sid)[0][0, 0] * 32768
+                audio1 = net_g.infer(feats, p_len, sid)[0][0, 0] * 32768
             audio1 = audio1.data.cpu().float().numpy().astype(np.int16)
 
         t2 = ttime()
@@ -159,24 +194,33 @@ class VC(object):
 
         return audio1
 
-    def pipeline(self,
-        model,                    #                  - Wave-to-Feat Extractor
-        net_g,                    #                  - Feat-to-Wave Generator
-        sid:          int,        #                  - Target speaker ID
-        audio,                    # :: NDArray[(T,)] - Source audio waveform 
-        times,                    #                  - Output of Time to vc
-        f0_up_key:    int | None, #                  - fo manipulation rate, required if `if_f0 == 1`        
-        f0_method:    str | None, #                  - fo extraction method, required if `if_f0 == 1`
-        file_index:   str,        #                  - Path to faiss `file_index`
-        file_big_npy: str,        #                  - Path to `big_npy`
-        index_rate:   float,      #                  - Retrieval related something
-        if_f0:        int,        # Whether use with-fo model or no-fo model
-        f0_file=None,             # External fo file
+    def pipeline(
+        self,
+        model,  #                  - Wave-to-Feat Extractor
+        net_g,  #                  - Feat-to-Wave Generator
+        sid: int,  #                  - Target speaker ID
+        audio,  # :: NDArray[(T,)] - Source audio waveform
+        times,  #                  - Output of Time to vc
+        f0_up_key: int
+        | None,  #                  - fo manipulation rate, required if `if_f0 == 1`
+        f0_method: str
+        | None,  #                  - fo extraction method, required if `if_f0 == 1`
+        file_index: str,  #                  - Path to faiss `file_index`
+        file_big_npy: str,  #                  - Path to `big_npy`
+        index_rate: float,  #                  - Retrieval related something
+        if_f0: int,  # Whether use with-fo model or no-fo model
+        f0_file=None,  # External fo file
     ):
         """Runner function."""
 
         # Load index/big_npy
-        if file_big_npy != "" and file_index != "" and os.path.exists(file_big_npy) and os.path.exists(file_index) and index_rate != 0:
+        if (
+            file_big_npy != ""
+            and file_index != ""
+            and os.path.exists(file_big_npy)
+            and os.path.exists(file_index)
+            and index_rate != 0
+        ):
             try:
                 index = faiss.read_index(file_index)
                 big_npy = np.load(file_big_npy)
@@ -198,8 +242,11 @@ class VC(object):
             for t in range(self.t_center, audio.shape[0], self.t_center):
                 # t_center, 2*t_center, ...
                 opt_ts.append(
-                    t - self.t_query + np.where(
-                        np.abs(audio_sum[t - self.t_query : t + self.t_query]) == np.abs(audio_sum[t - self.t_query : t + self.t_query]).min()
+                    t
+                    - self.t_query
+                    + np.where(
+                        np.abs(audio_sum[t - self.t_query : t + self.t_query])
+                        == np.abs(audio_sum[t - self.t_query : t + self.t_query]).min()
                     )[0][0]
                 )
 
@@ -223,8 +270,8 @@ class VC(object):
         pitch, pitchf = None, None
         if if_f0 == 1:
             pitch, pitchf = self.get_f0(audio_pad, p_len, f0_up_key, f0_method, inp_f0)
-            pitch, pitchf = pitch[ :p_len], pitchf[:p_len]
-            pitch  = torch.tensor(pitch,  device=self.device).unsqueeze(0).long()
+            pitch, pitchf = pitch[:p_len], pitchf[:p_len]
+            pitch = torch.tensor(pitch, device=self.device).unsqueeze(0).long()
             pitchf = torch.tensor(pitchf, device=self.device).unsqueeze(0).float()
 
         # Speaker ID :: (B=1, 1)
@@ -240,12 +287,21 @@ class VC(object):
             s_f = s // self.window
             t = t // self.window * self.window
             audio_opt.append(
-                self.vc(model, net_g, sid,
+                self.vc(
+                    model,
+                    net_g,
+                    sid,
                     audio_pad[s : t + self.t_pad2 + self.window],
-                    pitch[ :, s_f : (t + self.t_pad2) // self.window] if if_f0 == 1 else None,
-                    pitchf[:, s_f : (t + self.t_pad2) // self.window] if if_f0 == 1 else None,
+                    pitch[:, s_f : (t + self.t_pad2) // self.window]
+                    if if_f0 == 1
+                    else None,
+                    pitchf[:, s_f : (t + self.t_pad2) // self.window]
+                    if if_f0 == 1
+                    else None,
                     times,
-                    index, big_npy, index_rate,
+                    index,
+                    big_npy,
+                    index_rate,
                 )[self.t_pad_tgt : -self.t_pad_tgt]
             )
             s = t
@@ -253,12 +309,16 @@ class VC(object):
         t_f = t // self.window
         audio_opt.append(
             self.vc(
-                model, net_g, sid,
+                model,
+                net_g,
+                sid,
                 audio_pad[t:],
-                (pitch[ :, t_f:] if t is not None else pitch ) if if_f0 == 1 else None,
+                (pitch[:, t_f:] if t is not None else pitch) if if_f0 == 1 else None,
                 (pitchf[:, t_f:] if t is not None else pitchf) if if_f0 == 1 else None,
                 times,
-                index, big_npy, index_rate,
+                index,
+                big_npy,
+                index_rate,
             )[self.t_pad_tgt : -self.t_pad_tgt]
         )
 
@@ -272,15 +332,16 @@ class VC(object):
 
         return audio_opt
 
+
 def convert_voice(
-    p_wave:    str,
-    p_ckpt_u:  str, # e.g. "hubert_base.pt"
-    p_ckpt_g:  str,
-    spk_id:    int,
-    f0_up_key: int  =   +12,
-    f0_method: str  =  "pm",
-    device:    str  = "cpu",
-    use_half:  bool = True,
+    p_wave: str,
+    p_ckpt_u: str,  # e.g. "hubert_base.pt"
+    p_ckpt_g: str,
+    spk_id: int,
+    f0_up_key: int = +12,
+    f0_method: str = "pm",
+    device: str = "cpu",
+    use_half: bool = True,
 ):
     """
     Args:
@@ -299,7 +360,9 @@ def convert_voice(
 
     # Load models
     ## HuBERT
-    hubert, _, _ = checkpoint_utils.load_model_ensemble_and_task([p_ckpt_u], suffix="")[0][0].to(device)
+    hubert, _, _ = checkpoint_utils.load_model_ensemble_and_task([p_ckpt_u], suffix="")[
+        0
+    ][0].to(device)
     hubert = hubert.half() if use_half else hubert.float()
     hubert.eval()
     ## Feat2Wave Generator
@@ -316,14 +379,17 @@ def convert_voice(
     vc = VC(tgt_sr=tgt_sr, device=device, is_half=use_half)
     ts = [0, 0, 0]
     o_np = vc.pipeline(
-        hubert, net_g,
-        sid       = spk_id,
-        audio     = wave_np,
-        time      = ts,
-        if_f0     = 1,
-        f0_up_key = f0_up_key,
-        f0_method = f0_method,
-        file_index="", file_big_npy="", index_rate=0
+        hubert,
+        net_g,
+        sid=spk_id,
+        audio=wave_np,
+        time=ts,
+        if_f0=1,
+        f0_up_key=f0_up_key,
+        f0_method=f0_method,
+        file_index="",
+        file_big_npy="",
+        index_rate=0,
     )
 
     return o_np, tgt_sr

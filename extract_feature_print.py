@@ -48,7 +48,7 @@ def readwave(wav_path: str, normalize=False):
     if normalize:
         with torch.no_grad():
             feats = F.layer_norm(feats, feats.shape)
-    
+
     # Reshape :: (T,) -> (B=1, T)
     feats = feats.view(1, -1)
 
@@ -57,12 +57,12 @@ def readwave(wav_path: str, normalize=False):
 
 # ⚡Configs
 ## args
-n_part: int =  int(sys.argv[2]) # The number of GPUs
-i_part: int =  int(sys.argv[3]) # GPU index
+n_part: int = int(sys.argv[2])  # The number of GPUs
+i_part: int = int(sys.argv[3])  # GPU index
 if len(sys.argv) == 5:
     exp_dir: str = sys.argv[4]  # Experiment directory
 else:
-    i_gpu:   str = sys.argv[4]  # GPU specifier
+    i_gpu: str = sys.argv[4]  # GPU specifier
     exp_dir: str = sys.argv[5]  # Experiment directory
     os.environ["CUDA_VISIBLE_DEVICES"] = str(i_gpu)
 ## Model
@@ -76,11 +76,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ⚡Logger
 f = open(f"{exp_dir}/extract_f0_feature.log", "a+")
+
+
 def printt(strr):
     """Print to STDOUT and log file."""
     print(strr)
     f.write(f"{strr}\n")
     f.flush()
+
 
 printt(sys.argv)
 printt(exp_dir)
@@ -88,13 +91,15 @@ printt(exp_dir)
 # Initialization - HuBERT Wave-to-Unit model
 ## Accept only 16kHz audio, yield hop_size 320 (20msec/frame) unit series
 printt(f"load model on {device} from {model_path}")
-models, saved_cfg, _ = checkpoint_utils.load_model_ensemble_and_task([model_path], suffix="")
+models, saved_cfg, _ = checkpoint_utils.load_model_ensemble_and_task(
+    [model_path], suffix=""
+)
 model = models[0].to(device)
 if device != "cpu":
     model = model.half()
 model.eval()
 
-#⚡ Data selection - In charge on this GPU (i, i+n*1, i+n*2, ...)
+# ⚡ Data selection - In charge on this GPU (i, i+n*1, i+n*2, ...)
 todo = sorted(list(os.listdir(wavPath)))[i_part::n_part]
 
 # Run
@@ -107,9 +112,9 @@ else:
         # Extract unit series from audio file, then save it as a .npy file.
         try:
             if file.endswith(".wav"):
-                #⚡ Path and Validation
-                wav_path = f"{wavPath}/{file}"                       # e.g. f"{exp_dir}/1_16k_wavs/{xxx}.wav"
-                out_path = f"{outPath}/{file.replace('wav', 'npy')}" # e.g. f"{exp_dir}/3_feature256/{xxx}.npy"
+                # ⚡ Path and Validation
+                wav_path = f"{wavPath}/{file}"  # e.g. f"{exp_dir}/1_16k_wavs/{xxx}.wav"
+                out_path = f"{outPath}/{file.replace('wav', 'npy')}"  # e.g. f"{exp_dir}/3_feature256/{xxx}.npy"
                 if os.path.exists(out_path):
                     continue
 
@@ -120,7 +125,9 @@ else:
                 mask_placeholder = torch.BoolTensor(wave.shape).fill_(False).to(device)
                 ## Wave-to-Unit :: (B=1, T) -> (B=1, Frame, Feat) -> (Frame, Feat) - Unit series
                 inputs = {
-                    "source": wave.half().to(device) if device != "cpu" else wave.to(device),
+                    "source": wave.half().to(device)
+                    if device != "cpu"
+                    else wave.to(device),
                     "padding_mask": mask_placeholder,
                     "output_layer": 9,
                 }
@@ -134,7 +141,7 @@ else:
                 else:
                     printt("%s-contains nan" % file)
 
-                #⚡ Progress report
+                # ⚡ Progress report
                 if idx % report_interval == 0:
                     printt(f"now-{len(todo)},all-{idx},{file},{feats.shape}")
         except:

@@ -112,7 +112,10 @@ hubert_model = None
 def load_hubert():
     """Load Fairseq `hubert_base.pt` as `hubert_model`."""
     global hubert_model
-    models, _, _ = checkpoint_utils.load_model_ensemble_and_task(["hubert_base.pt"],suffix="",)
+    models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
+        ["hubert_base.pt"],
+        suffix="",
+    )
     hubert_model = models[0].to(device)
     hubert_model = hubert_model.half() if is_half else hubert_model.float()
     hubert_model.eval()
@@ -129,8 +132,18 @@ for name in os.listdir(weight_uvr5_root):
     if name.endswith(".pth"):
         uvr5_names.append(name.replace(".pth", ""))
 
+
 #### Convert #######################################################################################
-def vc_single(sid, input_audio, f0_up_key, f0_file, f0_method, file_index, file_big_npy, index_rate): #spk_item, input_audio0, vc_transform0,f0_file,f0method0
+def vc_single(
+    sid,
+    input_audio,
+    f0_up_key,
+    f0_file,
+    f0_method,
+    file_index,
+    file_big_npy,
+    index_rate,
+):  # spk_item, input_audio0, vc_transform0,f0_file,f0method0
     """Convert speech/song of a speaker."""
     global tgt_sr, net_g, vc, hubert_model
     if input_audio is None:
@@ -140,19 +153,45 @@ def vc_single(sid, input_audio, f0_up_key, f0_file, f0_method, file_index, file_
     try:
         audio = load_audio(input_audio, 16000)
         times = [0, 0, 0]
-        if(hubert_model==None):
+        if hubert_model == None:
             load_hubert()
         if_f0 = cpt.get("f0", 1)
-        file_index = file_index.strip(" ").strip('"').strip("\n").strip('"').strip(" ").replace("trained", "added") # 防止小白写错，自动帮他替换掉
-        file_big_npy = file_big_npy.strip(" ").strip('"').strip("\n").strip('"').strip(" ")
+        file_index = (
+            file_index.strip(" ")
+            .strip('"')
+            .strip("\n")
+            .strip('"')
+            .strip(" ")
+            .replace("trained", "added")
+        )  # 防止小白写错，自动帮他替换掉
+        file_big_npy = (
+            file_big_npy.strip(" ").strip('"').strip("\n").strip('"').strip(" ")
+        )
 
-        audio_opt = vc.pipeline(hubert_model, net_g, sid, audio, times, f0_up_key, f0_method, file_index, file_big_npy, index_rate, if_f0, f0_file=f0_file)
-        print("npy: ", times[0], "s, f0: ", times[1], "s, infer: ", times[2], "s", sep="")
+        audio_opt = vc.pipeline(
+            hubert_model,
+            net_g,
+            sid,
+            audio,
+            times,
+            f0_up_key,
+            f0_method,
+            file_index,
+            file_big_npy,
+            index_rate,
+            if_f0,
+            f0_file=f0_file,
+        )
+        print(
+            "npy: ", times[0], "s, f0: ", times[1], "s, infer: ", times[2], "s", sep=""
+        )
         return "Success", (tgt_sr, audio_opt)
     except:
         info = traceback.format_exc()
         print(info)
         return info, (None, None)
+
+
 #### /Convert ######################################################################################
 
 
@@ -288,7 +327,11 @@ def get_vc(sid):
 
     # feat-to-wave `net_g`
     ## Init/Simplification/Restore/Eval/Half
-    net_g = SynthesizerTrnMs256NSFsid(*cpt["config"], is_half=is_half) if if_f0 == 1 else SynthesizerTrnMs256NSFsid_nono(*cpt["config"])
+    net_g = (
+        SynthesizerTrnMs256NSFsid(*cpt["config"], is_half=is_half)
+        if if_f0 == 1
+        else SynthesizerTrnMs256NSFsid_nono(*cpt["config"])
+    )
     del net_g.enc_q
     print(net_g.load_state_dict(cpt["weight"], strict=False))
     net_g.eval().to(device)
@@ -644,14 +687,14 @@ def train_index(exp_dir1):
 
 # but5.click(train1key, [exp_dir1, sr2, if_f0_3, trainset_dir4, spk_id5, gpus6, np7, f0method8, save_epoch10, total_epoch11, batch_size12, if_save_latest13, pretrained_G14, pretrained_D15, gpus16, if_cache_gpu17], info3)
 def train1key(
-    exp_dir1: str,    # Name of experiment directory
+    exp_dir1: str,  # Name of experiment directory
     sr2,
     if_f0_3,
     trainset_dir4,
-    spk_id5,          # Speaker index, used as `sid` or `dv`
+    spk_id5,  # Speaker index, used as `sid` or `dv`
     gpus6,
     np7,
-    f0method8,        # fo extraction method specifier
+    f0method8,  # fo extraction method specifier
     save_epoch10,
     total_epoch11,
     batch_size12,
@@ -675,7 +718,12 @@ def train1key(
 
     #########step1: Preprocessing
     open(path_log_preprocess, "w").close()
-    cmd = python_cmd + " trainset_preprocess_pipeline_print.py %s %s %s %s " % (trainset_dir4, sr_dict[sr2], ncpu, path_exp) + str(noparallel)
+    cmd = (
+        python_cmd
+        + " trainset_preprocess_pipeline_print.py %s %s %s %s "
+        % (trainset_dir4, sr_dict[sr2], ncpu, path_exp)
+        + str(noparallel)
+    )
     yield get_info_str("step1:正在处理数据")
     yield get_info_str(cmd)
     Popen(cmd, shell=True).wait()
@@ -700,7 +748,13 @@ def train1key(
     leng = len(gpus)
     ps = []
     for idx, n_g in enumerate(gpus):
-        cmd = python_cmd + " extract_feature_print.py %s %s %s %s %s" % (device, leng, idx, n_g, path_exp)
+        cmd = python_cmd + " extract_feature_print.py %s %s %s %s %s" % (
+            device,
+            leng,
+            idx,
+            n_g,
+            path_exp,
+        )
         yield get_info_str(cmd)
         p = Popen(cmd, shell=True, cwd=now_dir)
         ps.append(p)
@@ -712,11 +766,11 @@ def train1key(
     #######step3a: Train model
     yield get_info_str("step3a:正在训练模型")
     # 生成filelist
-    exp_dir     = path_exp
+    exp_dir = path_exp
     gt_wavs_dir = f"{path_exp}/0_gt_wavs"
-    co256_dir   = f"{path_exp}/3_feature256"
+    co256_dir = f"{path_exp}/3_feature256"
     if if_f0_3 == "是":
-        f0_dir    = f"{path_exp}/2a_f0"
+        f0_dir = f"{path_exp}/2a_f0"
         f0nsf_dir = f"{path_exp}/2b-f0nsf"
         names = (
             set([name.split(".")[0] for name in os.listdir(gt_wavs_dir)])
@@ -753,7 +807,13 @@ def train1key(
         else:
             opt.append(
                 "%s/%s.wav|%s/%s.npy|%s"
-                % (gt_wavs_dir.replace("\\", "\\\\"), name, co256_dir.replace("\\", "\\\\"), name, spk_id5)
+                % (
+                    gt_wavs_dir.replace("\\", "\\\\"),
+                    name,
+                    co256_dir.replace("\\", "\\\\"),
+                    name,
+                    spk_id5,
+                )
             )
     if if_f0_3 == "是":
         # audiopath = f"{now_dir}/logs/mute/0_gt_wavs/mute{sr2}.wav"
@@ -768,7 +828,7 @@ def train1key(
     else:
         opt.append(
             "%s/logs/mute/0_gt_wavs/mute%s.wav|%s/logs/mute/3_feature256/mute.npy|%s"
-            % (now_dir, sr2, now_dir,                   spk_id5)
+            % (now_dir, sr2, now_dir, spk_id5)
         )
 
     # Make `filelist.txt`

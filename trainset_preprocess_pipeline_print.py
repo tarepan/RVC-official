@@ -43,15 +43,21 @@ from my_utils import load_audio
 now_dir = os.getcwd()
 sys.path.append(now_dir)
 ## Args
-inp_root:   str  =     sys.argv[1]           # Data root, directly under which raw .wav files should exist
-sr:         int  = int(sys.argv[2])          # Audio target sampling rate, used for resampling
-n_p:        int  = int(sys.argv[3])          # The number of process for MP
-exp_dir:    str  =     sys.argv[4]           # Experiment directory, under which preprocessed waveforms are saved
-noparallel: bool =     sys.argv[5] == "True" # Whether to preprocess non-parallelly
+inp_root: str = sys.argv[
+    1
+]  # Data root, directly under which raw .wav files should exist
+sr: int = int(sys.argv[2])  # Audio target sampling rate, used for resampling
+n_p: int = int(sys.argv[3])  # The number of process for MP
+exp_dir: str = sys.argv[
+    4
+]  # Experiment directory, under which preprocessed waveforms are saved
+noparallel: bool = sys.argv[5] == "True"  # Whether to preprocess non-parallelly
 
 # Logger
 mutex = multiprocessing.Lock()
 f = open(f"{exp_dir}/preprocess.log", "a+")
+
+
 def println(strr):
     mutex.acquire()
     print(strr)
@@ -66,20 +72,27 @@ class PreProcess:
         Args:
             sr - Target sampling rate of '0_gt_wavs'
         """
-        self.slicer = Slicer(sr=sr, threshold=-40, min_length=800, min_interval=400, hop_size=15, max_sil_kept=150)
+        self.slicer = Slicer(
+            sr=sr,
+            threshold=-40,
+            min_length=800,
+            min_interval=400,
+            hop_size=15,
+            max_sil_kept=150,
+        )
         self.sr = sr
 
         # Filter - Parameters of 48Hz high-pass filter
         self.bh, self.ah = signal.butter(N=5, Wn=48, btype="high", fs=sr)
 
-        self.per = 3.7     # Standard chunk length  [sec]
-        self.overlap = 0.3 # Chunk-to-Chunk overlap [sec]
+        self.per = 3.7  # Standard chunk length  [sec]
+        self.overlap = 0.3  # Chunk-to-Chunk overlap [sec]
         self.tail = self.per + self.overlap
         self.max = 0.95
         self.alpha = 0.8
         self.gt_wavs_dir = f"{exp_dir}/0_gt_wavs"
         self.wavs16k_dir = f"{exp_dir}/1_16k_wavs"
-        os.makedirs(exp_dir,          exist_ok=True)
+        os.makedirs(exp_dir, exist_ok=True)
         os.makedirs(self.gt_wavs_dir, exist_ok=True)
         os.makedirs(self.wavs16k_dir, exist_ok=True)
         # Remnant
@@ -99,12 +112,20 @@ class PreProcess:
 
         # NOTE: Amplitude normalize & preemphasis...?
         # NOTE: Audible difference seems to be very small (loudness is ofcourse changed)
-        tmp_audio = (tmp_audio / np.abs(tmp_audio).max() * (self.max * self.alpha)) + (1 - self.alpha) * tmp_audio
-        wavfile.write(f"{self.gt_wavs_dir}/{filename}", self.sr, tmp_audio.astype(np.float32))
+        tmp_audio = (tmp_audio / np.abs(tmp_audio).max() * (self.max * self.alpha)) + (
+            1 - self.alpha
+        ) * tmp_audio
+        wavfile.write(
+            f"{self.gt_wavs_dir}/{filename}", self.sr, tmp_audio.astype(np.float32)
+        )
 
         # Saved as sint16/16kHz
-        tmp_audio = librosa.resample(tmp_audio, orig_sr=self.sr, target_sr=16000)#, res_type="soxr_vhq"
-        wavfile.write(f"{self.wavs16k_dir}/{filename}", 16000,   tmp_audio.astype(np.float32))
+        tmp_audio = librosa.resample(
+            tmp_audio, orig_sr=self.sr, target_sr=16000
+        )  # , res_type="soxr_vhq"
+        wavfile.write(
+            f"{self.wavs16k_dir}/{filename}", 16000, tmp_audio.astype(np.float32)
+        )
 
     def pipeline(self, path_ipt: str, file_idx: int):
         """
@@ -124,17 +145,17 @@ class PreProcess:
             slices = self.slicer.slice(audio)
 
             # 4. Chunking & 5-7. Processing
-            total_chunk_idx = 0     # Chunk index in a audio
+            total_chunk_idx = 0  # Chunk index in a audio
             for audio_slice in slices:
-                slice_chunk_idx = 0 # Chunk index in a slice
+                slice_chunk_idx = 0  # Chunk index in a slice
                 while True:
-                    chunk_hop_sec = self.per - self.overlap # [sec]
+                    chunk_hop_sec = self.per - self.overlap  # [sec]
                     start = int(self.sr * chunk_hop_sec * slice_chunk_idx)
                     len_chunk = int(self.per * self.sr)
                     end = start + len_chunk
                     slice_chunk_idx += 1
                     if len(audio_slice[start:]) > self.tail * self.sr:
-                        chunk = audio_slice[start : end]
+                        chunk = audio_slice[start:end]
                         self.norm_write(chunk, file_idx, total_chunk_idx)
                         total_chunk_idx += 1
                     else:
@@ -164,7 +185,10 @@ class PreProcess:
         """⚡ Run multi-process preprocessing"""
         try:
             # infos :: (path_ipt :: str, file_idx :: int)[] - List up all items directly under the `inp_root`
-            infos = [(f"{inp_root}/{file_name}", file_idx) for file_idx, file_name in enumerate(sorted(list(os.listdir(inp_root))))]
+            infos = [
+                (f"{inp_root}/{file_name}", file_idx)
+                for file_idx, file_name in enumerate(sorted(list(os.listdir(inp_root))))
+            ]
 
             if noparallel:
                 for i in range(n_p):
@@ -172,7 +196,9 @@ class PreProcess:
             else:
                 ps = []
                 for i in range(n_p):
-                    p = multiprocessing.Process(target=self.pipeline_mp, args=(infos[i::n_p],))
+                    p = multiprocessing.Process(
+                        target=self.pipeline_mp, args=(infos[i::n_p],)
+                    )
                     p.start()
                     ps.append(p)
                     for p in ps:

@@ -38,7 +38,10 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
         try:
             new_state_dict[k] = saved_state_dict[k]
             if saved_state_dict[k].shape != state_dict[k].shape:
-                print("shape-%s-mismatch|need-%s|get-%s" % (k, state_dict[k].shape, saved_state_dict[k].shape))
+                print(
+                    "shape-%s-mismatch|need-%s|get-%s"
+                    % (k, state_dict[k].shape, saved_state_dict[k].shape)
+                )
                 raise KeyError
         except:
             logger.info("%s is not in the checkpoint" % k)
@@ -50,7 +53,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, load_opt=1):
         model.load_state_dict(new_state_dict, strict=False)
     logger.info("Loaded model weights")
     ## Epoch/LR/Optim
-    iteration     = checkpoint_dict["iteration"]
+    iteration = checkpoint_dict["iteration"]
     learning_rate = checkpoint_dict["learning_rate"]
     if optimizer is not None and load_opt == 1:
         optimizer.load_state_dict(checkpoint_dict["optimizer"])
@@ -79,7 +82,11 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
             learning_rate :: float                    - initial learning rate (`hps.train.learning_rate`)
         }
     """
-    logger.info("Saving model and optimizer state at epoch {} to {}".format(iteration, checkpoint_path))
+    logger.info(
+        "Saving model and optimizer state at epoch {} to {}".format(
+            iteration, checkpoint_path
+        )
+    )
     if hasattr(model, "module"):
         state_dict = model.module.state_dict()
     else:
@@ -91,8 +98,9 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path)
             "optimizer": optimizer.state_dict(),
             "learning_rate": learning_rate,
         },
-        checkpoint_path, # f"{hps.model_dir}/G_{global_step|2333333}.pth"
+        checkpoint_path,  # f"{hps.model_dir}/G_{global_step|2333333}.pth"
     )
+
 
 def summarize(
     writer,
@@ -182,17 +190,53 @@ def get_hparams(init=True):
     # Load arguments
     # NOTE: important for base training: `total_epoch` / `batch_size` / `if_f0`
     parser = argparse.ArgumentParser()
-    parser.add_argument("-se", "--save_every_epoch",     type=int, required=True,              help="checkpoint save frequency (epoch)")
-    parser.add_argument("-te", "--total_epoch",          type=int, required=True,              help="total_epoch")
-    parser.add_argument("-pg", "--pretrainG",            type=str,                default="",  help="Pretrained Discriminator path")
-    parser.add_argument("-pd", "--pretrainD",            type=str,                default="",  help="Pretrained Generator path")
-    parser.add_argument("-g",  "--gpus",                 type=str,                default="0", help="split by -")
-    parser.add_argument("-bs", "--batch_size",           type=int, required=True,              help="batch size")
-    parser.add_argument("-e",  "--experiment_dir",       type=str, required=True,              help="experiment dir")
-    parser.add_argument("-sr", "--sample_rate",          type=str, required=True,              help="sample rate, 32k/40k/48k")
-    parser.add_argument("-f0", "--if_f0",                type=int, required=True,              help="use f0 as one of the inputs of the model, 1 or 0")
-    parser.add_argument("-l",  "--if_latest",            type=int, required=True,              help="if only save the latest G/D pth file, 1 or 0")
-    parser.add_argument("-c",  "--if_cache_data_in_gpu", type=int, required=True,              help="if caching the dataset in GPU memory, 1 or 0")
+    parser.add_argument(
+        "-se",
+        "--save_every_epoch",
+        type=int,
+        required=True,
+        help="checkpoint save frequency (epoch)",
+    )
+    parser.add_argument(
+        "-te", "--total_epoch", type=int, required=True, help="total_epoch"
+    )
+    parser.add_argument(
+        "-pg", "--pretrainG", type=str, default="", help="Pretrained Discriminator path"
+    )
+    parser.add_argument(
+        "-pd", "--pretrainD", type=str, default="", help="Pretrained Generator path"
+    )
+    parser.add_argument("-g", "--gpus", type=str, default="0", help="split by -")
+    parser.add_argument(
+        "-bs", "--batch_size", type=int, required=True, help="batch size"
+    )
+    parser.add_argument(
+        "-e", "--experiment_dir", type=str, required=True, help="experiment dir"
+    )
+    parser.add_argument(
+        "-sr", "--sample_rate", type=str, required=True, help="sample rate, 32k/40k/48k"
+    )
+    parser.add_argument(
+        "-f0",
+        "--if_f0",
+        type=int,
+        required=True,
+        help="use f0 as one of the inputs of the model, 1 or 0",
+    )
+    parser.add_argument(
+        "-l",
+        "--if_latest",
+        type=int,
+        required=True,
+        help="if only save the latest G/D pth file, 1 or 0",
+    )
+    parser.add_argument(
+        "-c",
+        "--if_cache_data_in_gpu",
+        type=int,
+        required=True,
+        help="if caching the dataset in GPU memory, 1 or 0",
+    )
     args = parser.parse_args()
 
     # Prepare directories
@@ -265,19 +309,19 @@ def get_hparams(init=True):
     # Merge - Merge (or override) config from file with arguments
     hparams = HParams(**config)
     hparams.model_dir = hparams.experiment_dir = experiment_dir
-    hparams.save_every_epoch     = args.save_every_epoch
-    hparams.name                 = args.experiment_dir
-    hparams.total_epoch          = args.total_epoch
-    hparams.pretrainG            = args.pretrainG
-    hparams.pretrainD            = args.pretrainD
-    hparams.gpus                 = args.gpus
-    hparams.train.batch_size     = args.batch_size # Override
-    hparams.sample_rate          = args.sample_rate
-    hparams.if_f0                = args.if_f0
-    hparams.if_latest            = args.if_latest
+    hparams.save_every_epoch = args.save_every_epoch
+    hparams.name = args.experiment_dir
+    hparams.total_epoch = args.total_epoch
+    hparams.pretrainG = args.pretrainG
+    hparams.pretrainD = args.pretrainD
+    hparams.gpus = args.gpus
+    hparams.train.batch_size = args.batch_size  # Override
+    hparams.sample_rate = args.sample_rate
+    hparams.if_f0 = args.if_f0
+    hparams.if_latest = args.if_latest
     hparams.if_cache_data_in_gpu = args.if_cache_data_in_gpu
     # Path to the data list file
-    hparams.data.training_files  = f"{experiment_dir}/filelist.txt"
+    hparams.data.training_files = f"{experiment_dir}/filelist.txt"
     return hparams
 
 
@@ -325,6 +369,7 @@ def get_logger(model_dir, filename="train.log"):
 
 class HParams:
     """⚡"""
+
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
             if type(v) == dict:

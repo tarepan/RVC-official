@@ -19,13 +19,19 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         # Default: 2**15
         self.max_wav_value = hparams.max_wav_value
         self.sampling_rate = hparams.sampling_rate
-        self.hop_length    = hparams.hop_length     # hop length [sample], must match fo's hop (current configs set properly based on sr)
+        self.hop_length = (
+            hparams.hop_length
+        )  # hop length [sample], must match fo's hop (current configs set properly based on sr)
         # wave2spec parameters
         self.filter_length, self.win_length = hparams.filter_length, hparams.win_length
         # Filtering - audiopaths_and_text == [audiopath, text, pitch, pitchf, dv][]
         self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
-        self.min_text_len = getattr(hparams, "min_text_len",    1) # Minumum frame length (seems to be default value)
-        self.max_text_len = getattr(hparams, "max_text_len", 5000) # Maximum frame length (seems to be default value)
+        self.min_text_len = getattr(
+            hparams, "min_text_len", 1
+        )  # Minumum frame length (seems to be default value)
+        self.max_text_len = getattr(
+            hparams, "max_text_len", 5000
+        )  # Maximum frame length (seems to be default value)
         self._filter()
 
     def _filter(self):
@@ -44,7 +50,7 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         self.lengths = lengths
 
     def get_sid(self, sid):
-        """ :: int -> Tensor[1,]"""
+        """:: int -> Tensor[1,]"""
         sid = torch.LongTensor([int(sid)])
         return sid
 
@@ -73,15 +79,15 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
 
         # Clipping
         len_phone = phone.size()[0]
-        len_spec  =  spec.size()[-1]
+        len_spec = spec.size()[-1]
         if len_phone != len_spec:
             len_min = min(len_phone, len_spec)
             # amor
-            spec   = spec[:, :len_min]
-            wav    = wav[ :, :len_min * self.hop_length]
-            phone  = phone[  :len_min]
-            pitch  = pitch[  :len_min]
-            pitchf = pitchf[ :len_min]
+            spec = spec[:, :len_min]
+            wav = wav[:, : len_min * self.hop_length]
+            phone = phone[:len_min]
+            pitch = pitch[:len_min]
+            pitchf = pitchf[:len_min]
 
         return (spec, wav, phone, pitch, pitchf, dv)
 
@@ -104,7 +110,11 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         n_num = min(phone.shape[0], 900)  # DistributedBucketSampler
         phone, pitch, pitchf = phone[:n_num], pitch[:n_num], pitchf[:n_num]
         # Cast
-        phone, pitch, pitchf = torch.FloatTensor(phone), torch.LongTensor(pitch), torch.FloatTensor(pitchf)
+        phone, pitch, pitchf = (
+            torch.FloatTensor(phone),
+            torch.LongTensor(pitch),
+            torch.FloatTensor(pitchf),
+        )
 
         return phone, pitch, pitchf
 
@@ -118,7 +128,9 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
         # Load :: (T,)
         audio, sampling_rate = load_wav_to_torch(filename)
         if sampling_rate != self.sampling_rate:
-            raise ValueError(f"{sampling_rate} SR doesn't match target {self.sampling_rate} SR")
+            raise ValueError(
+                f"{sampling_rate} SR doesn't match target {self.sampling_rate} SR"
+            )
 
         # Scaling :: (T,) -> (1, T) - to [-1, 1] NOTE: changed
         audio_norm = audio
@@ -140,7 +152,14 @@ class TextAudioLoaderMultiNSFsid(torch.utils.data.Dataset):
                 print(spec_filename, traceback.format_exc())
         if (not spec_file_exist) or (not spec_loaded):
             # spec :: (B=1, T) -> (B=1, Freq, Frame) -> (Freq, Frame) - Linear-frequency Linear-amplitude spectrogram
-            spec = spectrogram_torch(audio_norm, self.filter_length, self.sampling_rate, self.hop_length, self.win_length, center=False).squeeze(0)
+            spec = spectrogram_torch(
+                audio_norm,
+                self.filter_length,
+                self.sampling_rate,
+                self.hop_length,
+                self.win_length,
+                center=False,
+            ).squeeze(0)
             torch.save(spec, spec_filename, _use_new_zipfile_serialization=False)
 
         return spec, audio_norm
@@ -181,7 +200,9 @@ class TextAudioCollateMultiNSFsid:
             sid           :: (B,)               - Speaker index
         """
         # Lengh-sorted Indice - e.g. batch -> [20, 40, 30] -> [1, 2, 0]
-        _, ids_sorted_decreasing = torch.sort(torch.LongTensor([x[0].size(1) for x in batch]), dim=0, descending=True)
+        _, ids_sorted_decreasing = torch.sort(
+            torch.LongTensor([x[0].size(1) for x in batch]), dim=0, descending=True
+        )
 
         # Padded placeholder - full size matrix with zeros
         ## spec_padded :: (B, Feat, Frame=frame_max)
@@ -198,7 +219,9 @@ class TextAudioCollateMultiNSFsid:
         wave_lengths = torch.LongTensor(len(batch))
         ## phone_padded :: (B, Frame=frame_max, Feat)
         max_phone_len = max([x[2].size(0) for x in batch])
-        phone_padded = torch.FloatTensor(len(batch), max_phone_len, batch[0][2].shape[1])
+        phone_padded = torch.FloatTensor(
+            len(batch), max_phone_len, batch[0][2].shape[1]
+        )
         phone_padded.zero_()
         ## phone_lengths :: (B,)
         phone_lengths = torch.LongTensor(len(batch))
@@ -233,21 +256,26 @@ class TextAudioCollateMultiNSFsid:
             phone_lengths[i] = len_phone
             ## pitch_padded :: (B, Frame=frame_max) <- (Frame,)
             pitch = row[3]
-            pitch_padded[ i, :pitch.size(0)] = pitch
+            pitch_padded[i, : pitch.size(0)] = pitch
             ## pitchf_padded :: (B, Frame=frame_max) <- (Frame,)
             pitchf = row[4]
-            pitchf_padded[i, :pitchf.size(0)] = pitchf
+            pitchf_padded[i, : pitchf.size(0)] = pitchf
             ## sid :: (B,) <- (1,)
             sid[i] = row[5]
 
         return (
-            phone_padded, phone_lengths,
+            phone_padded,
+            phone_lengths,
             pitch_padded,
             pitchf_padded,
-            spec_padded,  spec_lengths,
-            wave_padded,  wave_lengths,
+            spec_padded,
+            spec_lengths,
+            wave_padded,
+            wave_lengths,
             sid,
         )
+
+
 #### /DatasetA #########################################################################################
 
 
@@ -328,8 +356,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
                 )
             )
         audio_norm = audio
-#        audio_norm = audio / self.max_wav_value
-#        audio_norm = audio / np.abs(audio).max()
+        #        audio_norm = audio / self.max_wav_value
+        #        audio_norm = audio / np.abs(audio).max()
 
         audio_norm = audio_norm.unsqueeze(0)
         spec_filename = filename.replace(".wav", ".spec.pt")
@@ -428,6 +456,8 @@ class TextAudioCollate:
             wave_lengths,
             sid,
         )
+
+
 #### /DatasetB #########################################################################################
 
 
