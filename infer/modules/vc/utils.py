@@ -15,14 +15,14 @@ def get_index_path_from_model(sid):
             ]
             if sid.split(".")[0] in f
         ),
-        "",
+        ""
     )
 
 
 def load_hubert(config):
     models, _, _ = checkpoint_utils.load_model_ensemble_and_task(
         ["assets/hubert/hubert_base.pt"],
-        suffix="",
+        suffix=""
     )
     hubert_model = models[0]
     hubert_model = hubert_model.to(config.device)

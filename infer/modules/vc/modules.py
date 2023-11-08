@@ -13,7 +13,7 @@ from infer.lib.infer_pack.models import (
     SynthesizerTrnMs256NSFsid,
     SynthesizerTrnMs256NSFsid_nono,
     SynthesizerTrnMs768NSFsid,
-    SynthesizerTrnMs768NSFsid_nono,
+    SynthesizerTrnMs768NSFsid_nono
 )
 from infer.modules.vc.pipeline import Pipeline
 from infer.modules.vc.utils import *
@@ -41,14 +41,14 @@ class VC:
             "value": to_return_protect[0]
             if self.if_f0 != 0 and to_return_protect
             else 0.5,
-            "__type__": "update",
+            "__type__": "update"
         }
         to_return_protect1 = {
             "visible": self.if_f0 != 0,
             "value": to_return_protect[1]
             if self.if_f0 != 0 and to_return_protect
             else 0.33,
-            "__type__": "update",
+            "__type__": "update"
         }
 
         if sid == "" or sid == []:
@@ -85,15 +85,15 @@ class VC:
                 {
                     "visible": True,
                     "value": to_return_protect0,
-                    "__type__": "update",
+                    "__type__": "update"
                 },
                 {
                     "visible": True,
                     "value": to_return_protect1,
-                    "__type__": "update",
+                    "__type__": "update"
                 },
                 "",
-                "",
+                ""
             )
         person = f'{os.getenv("weight_root")}/{sid}'
         logger.info(f"Loading: {person}")
@@ -108,7 +108,7 @@ class VC:
             ("v1", 1): SynthesizerTrnMs256NSFsid,
             ("v1", 0): SynthesizerTrnMs256NSFsid_nono,
             ("v2", 1): SynthesizerTrnMs768NSFsid,
-            ("v2", 0): SynthesizerTrnMs768NSFsid_nono,
+            ("v2", 0): SynthesizerTrnMs768NSFsid_nono
         }
 
         self.net_g = synthesizer_class.get(
@@ -135,7 +135,7 @@ class VC:
                 to_return_protect0,
                 to_return_protect1,
                 index,
-                index,
+                index
             )
             if to_return_protect
             else {"visible": True, "maximum": n_spk, "__type__": "update"}
@@ -154,7 +154,7 @@ class VC:
         filter_radius,
         resample_sr,
         rms_mix_rate,
-        protect,
+        protect
     ):
         if input_audio_path is None:
             return "You need to upload an audio", None
@@ -200,7 +200,7 @@ class VC:
                 rms_mix_rate,
                 self.version,
                 protect,
-                f0_file,
+                f0_file
             )
             if self.tgt_sr != resample_sr >= 16000:
                 tgt_sr = resample_sr
@@ -214,7 +214,7 @@ class VC:
             return (
                 "Success.\n%s\nTime:\nnpy: %.2fs, f0: %.2fs, infer: %.2fs."
                 % (index_info, *times),
-                (tgt_sr, audio_opt),
+                (tgt_sr, audio_opt)
             )
         except:
             info = traceback.format_exc()
@@ -236,7 +236,7 @@ class VC:
         resample_sr,
         rms_mix_rate,
         protect,
-        format1,
+        format1
     ):
         try:
             dir_path = (
@@ -264,12 +264,11 @@ class VC:
                     f0_method,
                     file_index,
                     file_index2,
-                    # file_big_npy,
                     index_rate,
                     filter_radius,
                     resample_sr,
                     rms_mix_rate,
-                    protect,
+                    protect
                 )
                 if "Success" in info:
                     try:
@@ -279,13 +278,13 @@ class VC:
                                 "%s/%s.%s"
                                 % (opt_root, os.path.basename(path), format1),
                                 audio_opt,
-                                tgt_sr,
+                                tgt_sr
                             )
                         else:
                             path = "%s/%s.%s" % (
                                 opt_root,
                                 os.path.basename(path),
-                                format1,
+                                format1
                             )
                             with BytesIO() as wavf:
                                 sf.write(wavf, audio_opt, tgt_sr, format="wav")

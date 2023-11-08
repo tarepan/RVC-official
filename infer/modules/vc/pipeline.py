@@ -34,7 +34,7 @@ def cache_harvest_f0(input_audio_path, fs, f0max, f0min, frame_period):
         fs=fs,
         f0_ceil=f0max,
         f0_floor=f0min,
-        frame_period=frame_period,
+        frame_period=frame_period
     )
     f0 = pyworld.stonemask(audio, f0, t, fs)
     return f0
@@ -69,7 +69,7 @@ class Pipeline(object):
             config.x_query,
             config.x_center,
             config.x_max,
-            config.is_half,
+            config.is_half
         )
         self.sr = 16000  # hubert输入采样率
         self.window = 160  # 每帧点数
@@ -89,7 +89,7 @@ class Pipeline(object):
         f0_up_key,
         f0_method,
         filter_radius,
-        inp_f0=None,
+        inp_f0=None
     ):
         global input_audio_path2wav
         time_step = self.window / self.sr * 1000
@@ -104,7 +104,7 @@ class Pipeline(object):
                     time_step=time_step / 1000,
                     voicing_threshold=0.6,
                     pitch_floor=f0_min,
-                    pitch_ceiling=f0_max,
+                    pitch_ceiling=f0_max
                 )
                 .selected_array["frequency"]
             )
@@ -133,7 +133,7 @@ class Pipeline(object):
                 model,
                 batch_size=batch_size,
                 device=self.device,
-                return_periodicity=True,
+                return_periodicity=True
             )
             pd = torchcrepe.filter.median(pd, 3)
             f0 = torchcrepe.filter.mean(f0, 3)
@@ -149,7 +149,7 @@ class Pipeline(object):
                 self.model_rmvpe = RMVPE(
                     "%s/rmvpe.pt" % os.environ["rmvpe_root"],
                     is_half=self.is_half,
-                    device=self.device,
+                    device=self.device
                 )
             f0 = self.model_rmvpe.infer_from_audio(x, thred=0.03)
 
@@ -196,7 +196,7 @@ class Pipeline(object):
         big_npy,
         index_rate,
         version,
-        protect,
+        protect
     ):  # ,file_index,file_big_npy
         feats = torch.from_numpy(audio0)
         if self.is_half:
@@ -212,7 +212,7 @@ class Pipeline(object):
         inputs = {
             "source": feats.to(self.device),
             "padding_mask": padding_mask,
-            "output_layer": 9 if version == "v1" else 12,
+            "output_layer": 9 if version == "v1" else 12
         }
         t0 = ttime()
         with torch.no_grad():
@@ -297,12 +297,10 @@ class Pipeline(object):
         rms_mix_rate,
         version,
         protect,
-        f0_file=None,
+        f0_file=None
     ):
         if (
             file_index != ""
-            # and file_big_npy != ""
-            # and os.path.exists(file_big_npy) == True
             and os.path.exists(file_index)
             and index_rate != 0
         ):
@@ -358,7 +356,7 @@ class Pipeline(object):
                 f0_up_key,
                 f0_method,
                 filter_radius,
-                inp_f0,
+                inp_f0
             )
             pitch = pitch[:p_len]
             pitchf = pitchf[:p_len]
@@ -384,7 +382,7 @@ class Pipeline(object):
                         big_npy,
                         index_rate,
                         version,
-                        protect,
+                        protect
                     )[self.t_pad_tgt : -self.t_pad_tgt]
                 )
             else:
@@ -401,7 +399,7 @@ class Pipeline(object):
                         big_npy,
                         index_rate,
                         version,
-                        protect,
+                        protect
                     )[self.t_pad_tgt : -self.t_pad_tgt]
                 )
             s = t
@@ -419,7 +417,7 @@ class Pipeline(object):
                     big_npy,
                     index_rate,
                     version,
-                    protect,
+                    protect
                 )[self.t_pad_tgt : -self.t_pad_tgt]
             )
         else:
@@ -436,7 +434,7 @@ class Pipeline(object):
                     big_npy,
                     index_rate,
                     version,
-                    protect,
+                    protect
                 )[self.t_pad_tgt : -self.t_pad_tgt]
             )
         audio_opt = np.concatenate(audio_opt)
