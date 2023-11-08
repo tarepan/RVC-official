@@ -465,7 +465,6 @@ with gr.Blocks(title="RVC WebUI") as app:
 
     # Construction
     with gr.Tabs():
-
         # "Model Inference"
         with gr.TabItem(i18n("模型推理")):
             with gr.Row():
@@ -503,10 +502,10 @@ with gr.Blocks(title="RVC WebUI") as app:
                 # Conversion
                 with gr.Group():
                     with gr.Column():
-                        but0 = gr.Button(i18n("转换"), variant="primary") # "Convert"
+                        but0 = gr.Button(i18n("转换"), variant="primary")  # "Convert"
                         with gr.Row():
-                            vc_output1 = gr.Textbox(label=i18n("输出信息")) # "Output information"
-                            vc_output2 = gr.Audio(label=i18n("输出音频(右下角三个点,点了可以下载)")) # "Export audio (click on the three dots in the lower right corner to download)"
+                            vc_output1 = gr.Textbox(label=i18n("输出信息"))  # "Output information"
+                            vc_output2 = gr.Audio(label=i18n("输出音频(右下角三个点,点了可以下载)"))  # "Export audio (click on the three dots in the lower right corner to download)"
                         but0.click(vc.vc_single, [spk_item, input_audio0, vc_transform0, f0_file, f0method0, file_index1, file_index2, index_rate1, filter_radius0, resample_sr0, rms_mix_rate0, protect0], [vc_output1, vc_output2], api_name="infer_convert")
 
             with gr.TabItem(i18n("批量推理")):
